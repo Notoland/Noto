@@ -8,7 +8,7 @@
 //!
 //! # The allocator
 //!
-//! Noto 0.4 allocates from a bump pointer over regions obtained with `mmap`
+//! Noto 0.5 allocates from a bump pointer over regions obtained with `mmap`
 //! and never frees. That is enough to run programs that build strings, and it
 //! is deliberately the simplest thing that is correct while the memory model
 //! is being designed; see `docs/rfcs/0002-memory-model.md`.
@@ -157,6 +157,7 @@ pub fn emit(
     emit_bool_to_string(assembler, labels, data);
     emit_string_concat(assembler, labels);
     emit_string_length(assembler, labels);
+    emit_string_equals(assembler, labels);
     emit_assert(assembler, labels, data);
 }
 
@@ -626,6 +627,63 @@ fn emit_string_length(assembler: &mut Assembler, labels: &RuntimeLabels) {
     assembler.mov_reg_mem(Reg::Rax, Reg::Rdi, STRING_LENGTH_OFFSET);
     assembler.ret();
     assembler.bind(null);
+    assembler.mov_reg_imm64(Reg::Rax, 0);
+    assembler.ret();
+}
+
+/// `string_equals(left, right) -> bool`.
+///
+/// Compares length and then bytes. Comparing addresses would make two
+/// strings built different ways from the same characters unequal, which is
+/// not a distinction a Noto program can see or reason about.
+fn emit_string_equals(assembler: &mut Assembler, labels: &RuntimeLabels) {
+    begin(assembler, labels, Routine::StringEquals);
+
+    let equal = assembler.label();
+    let different = assembler.label();
+    let start = assembler.label();
+
+    // The same object, null included, is equal to itself without a read.
+    assembler.mov_reg_reg(Reg::Rax, Reg::Rdi);
+    assembler.sub(Reg::Rax, Reg::Rsi);
+    assembler.cmp_imm(Reg::Rax, 0);
+    assembler.jcc(Cond::Eq, equal);
+
+    // One null and one not cannot be equal, and must not be dereferenced.
+    assembler.cmp_imm(Reg::Rdi, 0);
+    assembler.jcc(Cond::Eq, different);
+    assembler.cmp_imm(Reg::Rsi, 0);
+    assembler.jcc(Cond::Eq, different);
+
+    // Different lengths end it before any byte is read.
+    assembler.mov_reg_mem(Reg::Rcx, Reg::Rdi, STRING_LENGTH_OFFSET);
+    assembler.mov_reg_mem(Reg::Rdx, Reg::Rsi, STRING_LENGTH_OFFSET);
+    assembler.mov_reg_reg(Reg::Rax, Reg::Rcx);
+    assembler.sub(Reg::Rax, Reg::Rdx);
+    assembler.cmp_imm(Reg::Rax, 0);
+    assembler.jcc(Cond::Ne, different);
+
+    assembler.add_imm(Reg::Rdi, STRING_DATA_OFFSET);
+    assembler.add_imm(Reg::Rsi, STRING_DATA_OFFSET);
+
+    assembler.bind(start);
+    assembler.cmp_imm(Reg::Rcx, 0);
+    assembler.jcc(Cond::Eq, equal);
+    assembler.movzx_reg_mem8(Reg::Rax, Reg::Rdi, 0);
+    assembler.movzx_reg_mem8(Reg::Rdx, Reg::Rsi, 0);
+    assembler.sub(Reg::Rax, Reg::Rdx);
+    assembler.cmp_imm(Reg::Rax, 0);
+    assembler.jcc(Cond::Ne, different);
+    assembler.add_imm(Reg::Rdi, 1);
+    assembler.add_imm(Reg::Rsi, 1);
+    assembler.sub_imm(Reg::Rcx, 1);
+    assembler.jmp(start);
+
+    assembler.bind(equal);
+    assembler.mov_reg_imm64(Reg::Rax, 1);
+    assembler.ret();
+
+    assembler.bind(different);
     assembler.mov_reg_imm64(Reg::Rax, 0);
     assembler.ret();
 }

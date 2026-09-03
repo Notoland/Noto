@@ -5,7 +5,7 @@ human or agent. Read this before touching anything.
 
 **Where the project stands:** the compiler is real and works end to end. A
 `.noto` file becomes a static native ELF executable with no LLVM, no libc, and
-no external toolchain. 418 tests pass, 0 fail, no warnings. The whole tool
+no external toolchain. 444 tests pass, 0 fail, no warnings. The whole tool
 set — `run`, `build`, `check`, `test`, `lint`, `fmt` — is implemented, and
 `class` gives the language its first object type.
 
@@ -110,6 +110,9 @@ fn main() {
   `noto test`
 - `import`/`export`: a program is many files, one module each, resolved from
   the root file's directory
+- `enum Direction { North, East }` and `enum Shape { Circle(r: Int) }`:
+  cases with or without data, matched bare or qualified, destructured in a
+  pattern, with coverage counting as exhaustive
 - `class Point(val x: Int, var y: Int) { fn ... }`: a constructor, field
   reads, field writes, methods and `this`. An object is a reference; every
   field takes a machine word and lives at `index * 8`; a method is a function
@@ -125,7 +128,8 @@ in Noto 0.1`. Nothing is silently accepted and miscompiled.
 |---|---|---|
 | `struct` / `data class` / `data struct` | `compiler/semantic/src/collect.rs` `declare_class` | value semantics need RFC 0001; `class` works |
 | class properties, body fields, field defaults, inheritance | `collect.rs` `declare_class` | methods work; the rest waits |
-| `interface`, `enum` | same | enums need tagged-union layout |
+| `interface` | same | |
+| explicit enum case values (`Red = 1`), methods on an enum | `collect.rs` `declare_enum` | enums otherwise work, data included |
 | generics (`fn f<T>`, `List<T>`) | `collect.rs` `collect_fn`, `resolve_type` | monomorphisation not designed yet |
 | extension functions | `collect.rs` `collect_fn` | receiver resolution missing |
 | floats | `compiler/lower/src/expr.rs` `lower_literal` | needs SSE registers in the backend |
@@ -236,9 +240,9 @@ handful of intrinsics.
    What remains: re-exporting an imported name, visibility between `export`
    and private, and a package manifest so a program can depend on something
    it did not copy in.
-3. **enums with associated data** — tagged unions, then pattern matching on
-   them, then sealed exhaustiveness (the checker already has the diagnostic:
-   `NON_EXHAUSTIVE_WHEN`).
+3. **enums** — ~~cases, associated data, matching, destructuring and
+   exhaustiveness~~ done. What remains: explicit case values (`Red = 1`),
+   methods on an enum, and `is`/`as` narrowing.
 4. **generics** — decide monomorphisation vs boxing, write an RFC first.
 5. **floats** — SSE registers in the encoder and a second register class.
 6. **`defer`** — scope-exit tracking in lowering, including error paths.
@@ -286,7 +290,7 @@ RFC.
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
-cargo test --workspace          # 418 tests, must stay at 0 failures
+cargo test --workspace          # 444 tests, must stay at 0 failures
 cargo build --workspace
 cargo run -q -p noto-driver --example emit -- examples/hello.noto /tmp/hello && /tmp/hello
 ```

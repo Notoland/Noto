@@ -470,7 +470,7 @@ fn reports_constructs_the_compiler_cannot_lower_yet() {
         ("struct Point(val x: Int)\nfn main() {}\n", "not supported by this compiler yet"),
         ("data class User(val name: String)\nfn main() {}\n", "not supported by this compiler yet"),
         ("interface Shape { fn area(): Int }\nfn main() {}\n", "not supported by this compiler yet"),
-        ("enum Color { Red }\nfn main() {}\n", "not supported by this compiler yet"),
+        ("enum Colour { Red = 1 }\nfn main() {}\n", "not supported by this compiler yet"),
         ("fn f<T>(x: T) {}\nfn main() {}\n", "generic functions are not supported"),
     ] {
         check_error(source, needle);
@@ -698,6 +698,160 @@ fn a_method_cannot_assign_to_a_val_field() {
         "class Rect(val side: Int) {\n    fn grow() {\n        this.side = 2\n    }\n}\n         fn main() {}\n",
         "cannot assign to `Rect.side`",
     );
+}
+
+// --- enums -----------------------------------------------------------------
+
+#[test]
+fn an_enum_declares_a_type_and_its_cases() {
+    let analysis = check_ok(
+        "enum Colour { Red, Green, Blue }\n         fn main() {\n    val c: Colour = Colour.Red\n    println(c == Colour.Red)\n}\n",
+    );
+    assert_eq!(analysis.enums.len(), 1);
+    assert_eq!(analysis.enums[0].cases.len(), 3);
+    assert_eq!(analysis.enums[0].cases[2].name, "Blue");
+}
+
+#[test]
+fn a_case_may_be_written_bare_or_qualified_in_a_pattern() {
+    check_ok(
+        "enum Colour { Red, Green }\n         fn name(c: Colour): String = when (c) {\n             Colour.Red -> \"red\"\n    Green -> \"green\"\n}\n         fn main() {\n    println(name(Colour.Red))\n}\n",
+    );
+}
+
+#[test]
+fn covering_every_case_is_as_complete_as_an_else() {
+    check_ok(
+        "enum Colour { Red, Green }\n         fn name(c: Colour): String = when (c) {\n    Red -> \"r\"\n    Green -> \"g\"\n}\n         fn main() {\n    println(name(Colour.Red))\n}\n",
+    );
+}
+
+#[test]
+fn a_missing_case_is_named_in_the_diagnostic() {
+    let (_, messages) = check(
+        "enum Colour { Red, Green, Blue }\n         fn name(c: Colour): String = when (c) {\n    Red -> \"r\"\n    Green -> \"g\"\n}\n         fn main() {}\n",
+    );
+    assert!(
+        messages.iter().any(|m| m.contains("does not cover every case")),
+        "{messages:?}"
+    );
+}
+
+#[test]
+fn a_guarded_arm_does_not_count_as_covering_its_case() {
+    check_error(
+        "enum Colour { Red, Green }\n         fn name(c: Colour, loud: Bool): String = when (c) {\n             Red if loud -> \"RED\"\n    Green -> \"g\"\n}\n         fn main() {}\n",
+        "does not cover every case",
+    );
+}
+
+#[test]
+fn an_unknown_case_is_reported_with_the_ones_that_exist() {
+    check_error(
+        "enum Colour { Red }\n         fn f(c: Colour): Int = when (c) {\n    Purple -> 1\n    else -> 2\n}\n         fn main() {}\n",
+        "`Colour` has no case `Purple`",
+    );
+}
+
+#[test]
+fn reading_a_case_that_does_not_exist_is_reported() {
+    check_error(
+        "enum Colour { Red }\nfn main() {\n    val c = Colour.Purple\n}\n",
+        "`Colour` has no case `Purple`",
+    );
+}
+
+#[test]
+fn a_case_pattern_against_a_non_enum_is_reported() {
+    check_error(
+        "enum Colour { Red }\n         fn f(n: Int): Int = when (n) {\n    Red -> 1\n    else -> 2\n}\n         fn main() {}\n",
+        "matches a `Int`",
+    );
+}
+
+#[test]
+fn a_case_declared_twice_is_reported() {
+    check_error(
+        "enum Colour { Red, Red }\nfn main() {}\n",
+        "`Colour.Red` is declared more than once",
+    );
+}
+
+#[test]
+fn a_case_may_carry_data() {
+    let analysis = check_ok(
+        "enum Shape { Circle(radius: Int), Rect(width: Int, height: Int), Point }\n         fn area(s: Shape): Int = when (s) {\n             Circle(r) -> 3 * r * r\n    Rect(w, h) -> w * h\n    Point -> 0\n}\n         fn main() {\n    println(area(Shape.Circle(2)))\n}\n",
+    );
+    assert!(analysis.enums[0].has_data);
+    assert_eq!(analysis.enums[0].widest_case(), 2);
+    assert_eq!(analysis.enums[0].cases[0].fields[0].name, "radius");
+}
+
+#[test]
+fn a_case_that_carries_nothing_is_not_called() {
+    check_error(
+        "enum Shape { Circle(r: Int), Point }\n         fn main() {\n    val p = Shape.Point(1)\n}\n",
+        "`Shape.Point` carries no data",
+    );
+}
+
+#[test]
+fn destructuring_a_case_checks_how_many_values_it_carries() {
+    check_error(
+        "enum Shape { Rect(w: Int, h: Int) }\n         fn f(s: Shape): Int = when (s) {\n    Rect(w) -> w\n    else -> 0\n}\n         fn main() {}\n",
+        "carries 2 values, but 1 is matched",
+    );
+}
+
+#[test]
+fn a_case_argument_is_type_checked_against_what_it_carries() {
+    check_error(
+        "enum Shape { Circle(radius: Int) }\n         fn main() {\n    val s = Shape.Circle(\"big\")\n}\n",
+        "`Shape.Circle.radius` is a `Int`",
+    );
+}
+
+#[test]
+fn a_case_may_be_matched_without_naming_what_it_carries() {
+    check_ok(
+        "enum Shape { Circle(r: Int), Point }\n         fn is_round(s: Shape): Bool = when (s) {\n    Circle -> true\n    Point -> false\n}\n         fn main() {\n    println(is_round(Shape.Point))\n}\n",
+    );
+}
+
+#[test]
+fn a_case_may_carry_an_object() {
+    check_ok(
+        "class Point(val x: Int, val y: Int)\n         enum Shape { At(origin: Point), Nowhere }\n         fn x_of(s: Shape): Int = when (s) {\n    At(p) -> p.x\n    Nowhere -> 0\n}\n         fn main() {\n    println(x_of(Shape.At(Point(1, 2))))\n}\n",
+    );
+}
+
+#[test]
+fn an_explicit_case_value_is_not_supported_yet() {
+    check_error("enum Colour { Red = 1 }\nfn main() {}\n", "explicit case values");
+}
+
+#[test]
+fn a_nullable_enum_still_needs_an_else() {
+    check_error(
+        "enum Colour { Red, Green }\n         fn name(c: Colour?): String = when (c) {\n    Red -> \"r\"\n    Green -> \"g\"\n}\n         fn main() {}\n",
+        "does not cover every case",
+    );
+}
+
+#[test]
+fn an_exported_enum_crosses_a_module_boundary() {
+    program_ok(&[
+        (
+            "main",
+            "fn main() {\n    println(paint.describe(paint.Colour.Red))\n}\n",
+            &[(1, Some("paint"), &[])],
+        ),
+        (
+            "colour",
+            "export enum Colour { Red, Green }\n             export fn describe(c: Colour): String = when (c) {\n                 Red -> \"r\"\n    Green -> \"g\"\n}\n",
+            &[],
+        ),
+    ]);
 }
 
 // --- modules ---------------------------------------------------------------

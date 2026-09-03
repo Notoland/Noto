@@ -1,6 +1,6 @@
 //! Interning of types.
 
-use crate::{DefId, Primitive, Type};
+use crate::{DefId, DefKind, Primitive, Type};
 use std::collections::HashMap;
 
 /// A handle to an interned [`Type`].
@@ -23,6 +23,8 @@ pub struct TypeStore {
     interned: HashMap<Type, TypeId>,
     /// The primitives, interned up front so that lookups are free.
     well_known: WellKnown,
+    /// What kind of declaration each [`DefId`] names.
+    definition_kinds: Vec<DefKind>,
     /// The name of every declared type, indexed by [`DefId`].
     ///
     /// A [`Type::Named`] carries only its `DefId`; the rest of what a
@@ -59,6 +61,7 @@ impl TypeStore {
             types: Vec::new(),
             interned: HashMap::new(),
             definitions: Vec::new(),
+            definition_kinds: Vec::new(),
             // Filled in immediately below; the placeholder is never observed.
             well_known: WellKnown {
                 error: TypeId(0),
@@ -104,9 +107,15 @@ impl TypeStore {
     }
 
     /// Registers a declared type and returns the id that names it.
-    pub fn declare(&mut self, name: impl Into<String>) -> DefId {
+    pub fn declare(&mut self, name: impl Into<String>, kind: DefKind) -> DefId {
         self.definitions.push(name.into());
+        self.definition_kinds.push(kind);
         DefId(self.definitions.len() as u32 - 1)
+    }
+
+    /// What kind of declaration an id names.
+    pub fn definition_kind(&self, def: DefId) -> DefKind {
+        self.definition_kinds.get(def.0 as usize).copied().unwrap_or(DefKind::Class)
     }
 
     /// The name a declaration was given, or `?` for one that never existed.

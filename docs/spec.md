@@ -1,9 +1,9 @@
-# The Noto language specification — 0.4
+# The Noto language specification — 0.5
 
 The language as implemented, section by section. Everything marked **not
 implemented** parses (the parser covers the full grammar) but is rejected
 during semantic analysis or lowering with `NOTO0500 … not implemented in
-Noto 0.4`. Nothing is silently accepted and miscompiled.
+Noto 0.5`. Nothing is silently accepted and miscompiled.
 
 This document describes behaviour; syntax details that deserve their own
 rationale live in [design/](design/).
@@ -60,9 +60,10 @@ test "addition works" {
 - `class` declares an object type — see [Objects](#objects).
 - `import` and `export` carry names across modules — see
   [Programs and files](#programs-and-files).
+- `enum` declares a closed set of cases — see [Enums](#enums).
 - Not implemented: `struct`, `data class`, `data struct`, `interface`,
-  `enum`, generics, extension functions, local `fn` inside a body, named
-  arguments, re-exporting an imported name.
+  generics, extension functions, local `fn` inside a body, named arguments,
+  re-exporting an imported name.
 
 ## Objects
 
@@ -119,6 +120,60 @@ the class body, default values for fields, inheritance, interfaces, generics,
 method values, `data class` equality and printing. An object has no
 `toString`, so `println(p)` does not compile — print its fields, or give the
 class a method that builds a `String`.
+
+## Enums
+
+```noto
+enum Direction { North, East, South, West }
+
+fn label(d: Direction): String = when (d) {
+    North -> "norte"
+    East -> "leste"
+    South -> "sul"
+    West -> "oeste"
+}
+```
+
+An `enum` declares a closed set of cases. A case is written `Direction.North`
+as a value; in a `when` arm it may be written bare (`North`) because the
+scrutinee's type says which enum it belongs to — this is the rule that
+uppercase names in a `when` arm are cases and lowercase ones are new
+bindings.
+
+**Covering every case is as complete as an `else`.** A `when` over an enum
+that names each case needs no `else` arm, and that is the point of an enum:
+adding a case later turns every such `when` into an error that names what is
+missing. An arm behind a guard does not count as covering its case — the
+guard may not hold. A nullable enum is never exhaustive by cases alone, since
+no case pattern matches `null`.
+
+A case may carry data, and a pattern names what it carries:
+
+```noto
+enum Shape {
+    Circle(radius: Int),
+    Rect(width: Int, height: Int),
+    Empty
+}
+
+fn area(s: Shape): Int = when (s) {
+    Circle(r) -> 3 * r * r
+    Rect(w, h) -> w * h
+    Empty -> 0
+}
+```
+
+Matching a case without naming what it carries (`Circle -> ...`) is fine when
+the arm only cares which case it is.
+
+**Representation follows the declaration.** An enum whose cases carry nothing
+*is* its tag: a value of it is an `Int` holding the case's position, with no
+allocation and no indirection, and a match is an integer comparison. An enum
+where any case carries data is a pointer to that tag followed by the live
+case's values — every case of it, including one carrying nothing.
+
+Not implemented: explicit case values (`Red = 1`), methods on an enum,
+generic enums, interfaces on an enum.
 
 ## Statements and termination
 

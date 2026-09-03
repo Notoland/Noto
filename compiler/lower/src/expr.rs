@@ -182,6 +182,33 @@ impl Builder<'_> {
         self.emit_value(ty, expr.span, |dest| InstKind::Unary { dest, op, operand: value })
     }
 
+    /// Lowers `==` and `!=` on strings to a content comparison.
+    ///
+    /// Comparing the pointers would make two strings built different ways
+    /// from the same characters unequal — a distinction a Noto program has no
+    /// way to see, and one that silently gives the wrong answer.
+    fn lower_string_equality(
+        &mut self,
+        op: BinaryOp,
+        left: Operand,
+        right: Operand,
+        span: Span,
+    ) -> Operand {
+        let equal = self.emit_value(IrType::Bool, span, |dest| InstKind::Intrinsic {
+            dest: Some(dest),
+            which: Intrinsic::StringEquals,
+            arguments: vec![left, right],
+        });
+        match op {
+            BinaryOp::Eq => equal,
+            _ => self.emit_value(IrType::Bool, span, |dest| InstKind::Unary {
+                dest,
+                op: UnOp::LogicalNot,
+                operand: equal,
+            }),
+        }
+    }
+
     fn lower_binary(&mut self, op: BinaryOp, left: &Expr, right: &Expr, expr: &Expr) -> Operand {
         // `&&`, `||` and `?:` only evaluate their right side sometimes, so they
         // become branches rather than instructions.
@@ -206,6 +233,12 @@ impl Builder<'_> {
         }
 
         let right_value = self.lower_expr(right);
+
+        // `String == String` compares contents, which is a runtime call.
+        if matches!(op, BinaryOp::Eq | BinaryOp::Ne) && operand_ty == IrType::Str {
+            return self.lower_string_equality(op, left_value, right_value, expr.span);
+        }
+
         let Some(ir_op) = binary_op(op, operand_ty) else {
             return self.unsupported(expr.span, "this operator");
         };
@@ -427,6 +460,12 @@ impl Builder<'_> {
             }
 
             self.switch_to(body_block);
+            // What a case carries is read here rather than in the test: the
+            // payload only means anything once the tag says which case is
+            // live.
+            if let Some((slot, subject_ty)) = subject {
+                self.bind_case_payload(arm, slot, subject_ty, span);
+            }
             let value = self.lower_expr(&arm.body);
             if let Some(slot) = result {
                 self.push(InstKind::StoreLocal { slot, value }, arm.span);
@@ -452,6 +491,52 @@ impl Builder<'_> {
     }
 
     /// Builds the condition that decides whether one `when` arm is taken.
+    /// Binds what a matched case carries into the arm's locals.
+    fn bind_case_payload(
+        &mut self,
+        arm: &noto_ast::WhenArm,
+        slot: noto_ir::SlotId,
+        subject_ty: IrType,
+        span: Span,
+    ) {
+        for pattern in &arm.patterns {
+            let noto_ast::PatternKind::EnumCase { fields: Some(fields), .. } = &pattern.kind
+            else {
+                continue;
+            };
+            let Some(Resolution::EnumCase { enum_id, index }) =
+                self.analysis.resolution(pattern.id)
+            else {
+                continue;
+            };
+
+            let carried: Vec<noto_types::TypeId> = self
+                .analysis
+                .enum_at(enum_id)
+                .cases
+                .get(index as usize)
+                .map(|case| case.fields.iter().map(|field| field.ty).collect())
+                .unwrap_or_default();
+
+            for (position, (sub, ty)) in fields.iter().zip(&carried).enumerate() {
+                let Some(Resolution::Local(local)) = self.analysis.resolution(sub.id) else {
+                    continue;
+                };
+                let Some(target) = self.slot_of(local) else { continue };
+
+                let object =
+                    self.emit_value(subject_ty, span, |dest| InstKind::LoadLocal { dest, slot });
+                let value_ty = crate::lower_type(&self.analysis.store, *ty);
+                let value = self.emit_value(value_ty, span, |dest| InstKind::Load {
+                    dest,
+                    address: object,
+                    offset: crate::payload_offset(position as u32),
+                });
+                self.push(InstKind::StoreLocal { slot: target, value }, span);
+            }
+        }
+    }
+
     fn lower_arm_test(
         &mut self,
         arm: &noto_ast::WhenArm,
@@ -567,6 +652,35 @@ impl Builder<'_> {
 
                 test.unwrap_or(Operand::Const(Const::Bool(true)))
             }
+            PatternKind::EnumCase { .. } => {
+                let Some(Resolution::EnumCase { enum_id, index }) =
+                    self.analysis.resolution(pattern.id)
+                else {
+                    return self.unsupported(pattern.span, "this pattern");
+                };
+                let subject =
+                    self.emit_value(ty, span, |dest| InstKind::LoadLocal { dest, slot });
+
+                // Without data the value is the tag; with it, the tag is the
+                // first word of what the value points at.
+                let (tag, tag_ty) = if self.analysis.enum_at(enum_id).has_data {
+                    let loaded = self.emit_value(IrType::I64, span, |dest| InstKind::Load {
+                        dest,
+                        address: subject,
+                        offset: 0,
+                    });
+                    (loaded, IrType::I64)
+                } else {
+                    (subject, ty)
+                };
+
+                self.emit_value(IrType::Bool, span, |dest| InstKind::Binary {
+                    dest,
+                    op: BinOp::Eq,
+                    left: tag,
+                    right: Operand::Const(Const::Int { value: index as i128, ty: tag_ty }),
+                })
+            }
             PatternKind::Binding { subpattern: None, .. } => {
                 // A bare name matches anything and binds the subject to it.
                 if let Some(Resolution::Local(local)) = self.analysis.resolution(pattern.id) {
@@ -601,6 +715,13 @@ impl Builder<'_> {
         // A class name applied to arguments constructs an object.
         if let Some(Resolution::Class(class)) = self.analysis.resolution(call.callee.id) {
             return self.lower_construction(class, call, expr);
+        }
+
+        // A case carrying data is constructed by calling it.
+        if let Some(Resolution::EnumCase { enum_id, index }) =
+            self.analysis.resolution(call.callee.id)
+        {
+            return self.lower_case_construction(enum_id, index, call, expr);
         }
 
         // A method call is an ordinary call with the receiver passed first.
@@ -764,6 +885,44 @@ impl Builder<'_> {
         }
     }
 
+    /// Lowers `Shape.Circle(3)` to an allocation holding the tag and the
+    /// values the case carries.
+    fn lower_case_construction(
+        &mut self,
+        enum_id: noto_semantic::EnumId,
+        index: u32,
+        call: &noto_ast::CallExpr,
+        expr: &Expr,
+    ) -> Operand {
+        let values: Vec<Operand> =
+            call.arguments.iter().map(|argument| self.lower_expr(&argument.value)).collect();
+
+        let widest = self.analysis.enum_at(enum_id).widest_case();
+        let size = crate::case_size(widest);
+        let object = self.emit_value(IrType::Ptr, expr.span, |dest| InstKind::Alloc { dest, size });
+
+        self.push(
+            InstKind::Store {
+                address: object.clone(),
+                offset: 0,
+                value: Operand::Const(Const::Int { value: index as i128, ty: IrType::I64 }),
+            },
+            expr.span,
+        );
+        for (position, value) in values.into_iter().enumerate() {
+            self.push(
+                InstKind::Store {
+                    address: object.clone(),
+                    offset: crate::payload_offset(position as u32),
+                    value,
+                },
+                expr.span,
+            );
+        }
+
+        object
+    }
+
     /// Lowers `Point(1, 2)` to an allocation followed by one store per field.
     ///
     /// The arguments are evaluated before the allocation so that their order
@@ -795,6 +954,30 @@ impl Builder<'_> {
     }
 
     fn lower_member(&mut self, receiver: &Expr, _name: &noto_ast::Ident, expr: &Expr) -> Operand {
+        // `Colour.Red` names a case; the receiver names a type and is never
+        // evaluated. Without data the case *is* its tag. With data — even for
+        // a case that carries none — the enum is a pointer, so this one still
+        // gets an object holding just the tag.
+        if let Some(Resolution::EnumCase { enum_id, index }) =
+            self.analysis.resolution(expr.id)
+        {
+            if !self.analysis.enum_at(enum_id).has_data {
+                return Operand::Const(Const::Int { value: index as i128, ty: IrType::I64 });
+            }
+            let size = crate::case_size(self.analysis.enum_at(enum_id).widest_case());
+            let object =
+                self.emit_value(IrType::Ptr, expr.span, |dest| InstKind::Alloc { dest, size });
+            self.push(
+                InstKind::Store {
+                    address: object.clone(),
+                    offset: 0,
+                    value: Operand::Const(Const::Int { value: index as i128, ty: IrType::I64 }),
+                },
+                expr.span,
+            );
+            return object;
+        }
+
         if let Some(Resolution::Field { class, index }) = self.analysis.resolution(expr.id) {
             let ty = crate::lower_type(
                 &self.analysis.store,

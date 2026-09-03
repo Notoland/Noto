@@ -26,7 +26,7 @@ use noto_ir::{
 };
 use noto_semantic::{Analysis, FunctionId, LocalId};
 use noto_span::Span;
-use noto_types::{Primitive, Type, TypeId};
+use noto_types::{DefKind, Primitive, Type, TypeId};
 use std::collections::HashMap;
 
 /// Lowers an analysed module to Noto IR.
@@ -135,6 +135,10 @@ pub fn lower_type(store: &noto_types::TypeStore, ty: TypeId) -> IrType {
         Type::String => IrType::Str,
         Type::Nullable(inner) => lower_type(store, *inner),
         Type::Unit | Type::Nothing => IrType::Unit,
+        // An enum with no associated data *is* its tag: a value of it is an
+        // integer, with no allocation and no indirection. One with data is a
+        // pointer to that tag followed by the live case's fields.
+        Type::Named { def, .. } if store.definition_kind(*def) == DefKind::Enum => IrType::I64,
         // An object is a reference: a `Point` value is the address of its
         // fields, and assigning one copies the pointer.
         Type::Named { .. } | Type::Tuple(_) | Type::Function { .. } | Type::Any => IrType::Ptr,
@@ -163,6 +167,19 @@ pub fn object_size(fields: usize) -> u32 {
 /// The byte offset of the field at `index`.
 pub fn field_offset(index: u32) -> u32 {
     index * FIELD_SIZE
+}
+
+/// The size in bytes of an enum whose widest case carries `fields` values.
+///
+/// The tag takes the first word and the payload follows it. Every case's
+/// data starts at the same offset, because only one case is ever live.
+pub fn case_size(fields: usize) -> u32 {
+    (1 + fields as u32) * FIELD_SIZE
+}
+
+/// The byte offset of the value at `index` in a case's payload.
+pub fn payload_offset(index: u32) -> u32 {
+    (1 + index) * FIELD_SIZE
 }
 
 fn lower_primitive(primitive: Primitive) -> IrType {
@@ -367,7 +384,7 @@ impl<'a> Builder<'a> {
                 codes::UNSUPPORTED_CONSTRUCT,
                 format!("{what} cannot be compiled to native code yet"),
             )
-            .with_primary(span, "not implemented in Noto 0.4"),
+            .with_primary(span, "not implemented in Noto 0.5"),
         );
         Operand::Const(Const::Unit)
     }

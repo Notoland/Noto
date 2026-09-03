@@ -79,6 +79,22 @@ pub enum Type {
     Error,
 }
 
+/// What kind of declaration a [`DefId`] names.
+///
+/// The type store keeps this because a [`Type::Named`] carries only an id,
+/// and the difference between a class and an enum decides everything from
+/// how a value of it is represented to what a pattern may match.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DefKind {
+    /// A `class`: a reference to fields on the heap.
+    Class,
+    /// An `enum` whose cases carry no data: a value of it is its tag.
+    Enum,
+    /// An `enum` some case of which carries data: a value of it is a pointer
+    /// to its tag followed by that case's fields.
+    EnumWithData,
+}
+
 /// Identifies a declaration in the definition table.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct DefId(pub u32);

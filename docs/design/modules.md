@@ -1,6 +1,6 @@
 # Modules
 
-Noto 0.4 compiles a program made of many files. This is what a module is,
+Noto 0.4 introduced programs made of many files. This is what a module is,
 how one finds another, and what crosses the boundary.
 
 ## A module is a file

@@ -129,6 +129,10 @@ impl Usage<'_> {
                 let info = &self.analysis.constants[id.0 as usize];
                 (info.module, info.name.clone())
             }
+            Resolution::Enum(id) | Resolution::EnumCase { enum_id: id, .. } => {
+                let info = self.analysis.enum_at(id);
+                (info.module, info.name.clone())
+            }
             Resolution::Local(_) | Resolution::Builtin(_) | Resolution::Error => return,
         };
         // A method is `Class.method`; what an import binds is the class.

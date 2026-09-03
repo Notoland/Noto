@@ -22,10 +22,116 @@ impl Checker<'_> {
     /// down the file or in another module entirely.
     pub(crate) fn declare_classes(&mut self, module: &Module) {
         for item in &module.items {
-            if let ItemKind::TypeDecl(decl) = &item.kind {
-                self.declare_class(item, decl);
+            match &item.kind {
+                ItemKind::TypeDecl(decl) => self.declare_class(item, decl),
+                ItemKind::Enum(decl) => self.declare_enum(item, decl),
+                _ => {}
             }
         }
+    }
+
+    /// Registers an enum and its cases.
+    ///
+    /// A case's position in the declaration is its tag, and an enum with no
+    /// associated data *is* that tag: a value of it is an `Int`, with no
+    /// allocation and no indirection. Associated data will make an enum a
+    /// pointer to its tag and fields, the way a class already is.
+    fn declare_enum(&mut self, item: &Item, decl: &noto_ast::EnumItem) {
+        let unsupported = |what: &str, span| {
+            Diagnostic::error(
+                codes::UNSUPPORTED_CONSTRUCT,
+                format!("{what} are not supported by this compiler yet"),
+            )
+            .with_primary(span, "not implemented in Noto 0.5")
+        };
+
+        if let Some(param) = decl.type_params.first() {
+            self.sink.emit(unsupported("generic enums", param.span));
+            return;
+        }
+        if let Some(interface) = decl.interfaces.first() {
+            self.sink.emit(unsupported("interfaces on an enum", interface.span));
+            return;
+        }
+        if let Some(method) = decl.methods.first() {
+            self.sink.emit(unsupported("methods on an enum", method.span));
+            return;
+        }
+        if let Some(case) = decl.cases.iter().find(|case| case.value.is_some()) {
+            let span = case.value.as_ref().expect("just matched").span;
+            self.sink.emit(
+                unsupported("explicit case values", span)
+                    .with_note("a case's tag is its position in the declaration"),
+            );
+            return;
+        }
+
+        let name = decl.name.name.clone();
+        if self.own_type(&name).is_some() || self.own_enum(&name).is_some() {
+            self.sink.emit(
+                Diagnostic::error(
+                    codes::DUPLICATE_NAME,
+                    format!("`{name}` is declared more than once"),
+                )
+                .with_primary(decl.name.span, "redeclared here"),
+            );
+            return;
+        }
+
+        let mut cases: Vec<crate::analysis::EnumCaseInfo> = Vec::new();
+        for case in &decl.cases {
+            if let Some(previous) = cases.iter().find(|seen| seen.name == case.name.name) {
+                let previous = previous.span;
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::DUPLICATE_NAME,
+                        format!("`{name}.{}` is declared more than once", case.name.name),
+                    )
+                    .with_primary(case.name.span, "redeclared here")
+                    .with_secondary(previous, "first declared here"),
+                );
+                continue;
+            }
+            cases.push(crate::analysis::EnumCaseInfo {
+                name: case.name.name.clone(),
+                // Field types are resolved in the next pass, once every
+                // type name in every module is registered.
+                fields: Vec::new(),
+                span: case.span,
+            });
+        }
+
+        // Whether a case carries data is visible in the syntax, so the
+        // representation is settled before any type is resolved.
+        let has_data = decl.cases.iter().any(|case| !case.fields.is_empty());
+
+        let id = crate::analysis::EnumId(self.enums.len() as u32);
+        let qualified = self.qualify(&name);
+        let kind = if has_data {
+            noto_types::DefKind::EnumWithData
+        } else {
+            noto_types::DefKind::Enum
+        };
+        let def = self.store.declare(qualified, kind);
+        let ty = self.store.intern(Type::Named { def, arguments: Vec::new() });
+        self.enums.push(crate::analysis::EnumInfo {
+            name: name.clone(),
+            module: self.current_module,
+            is_exported: item.modifiers.is_exported,
+            cases,
+            has_data,
+            ty,
+            def,
+            span: item.span,
+        });
+
+        let module = self.current_module.0 as usize;
+        self.module_enums[module].insert(name.clone(), id);
+        if item.modifiers.is_exported {
+            self.exported[module].insert(name.clone());
+        }
+        // The name is a value too: it is the namespace of the cases.
+        self.module_names[module].insert(name, Resolution::Enum(id));
     }
 
     pub(crate) fn collect_items(&mut self, module: &Module) {
@@ -38,7 +144,8 @@ impl Checker<'_> {
                 // Interfaces, enums and imports parse today but are not yet
                 // given semantics; `noto check` reports them rather than
                 // silently accepting a program it cannot compile.
-                ItemKind::Interface(_) | ItemKind::Enum(_) => self.report_unsupported(item),
+                ItemKind::Interface(_) => self.report_unsupported(item),
+                ItemKind::Enum(decl) => self.collect_enum_fields(decl),
                 // Imports are resolved by the driver and checked separately;
                 // there is no signature to collect from one.
                 ItemKind::Import(_) => {}
@@ -60,7 +167,7 @@ impl Checker<'_> {
                 codes::UNSUPPORTED_CONSTRUCT,
                 format!("{what} are not supported by this compiler yet"),
             )
-            .with_primary(span, "not implemented in Noto 0.4")
+            .with_primary(span, "not implemented in Noto 0.5")
         };
 
         if decl.class_kind != ClassKind::Class {
@@ -69,7 +176,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     format!("`{}` declarations are not supported by this compiler yet", decl.class_kind.as_str()),
                 )
-                .with_primary(item.span, "not implemented in Noto 0.4")
+                .with_primary(item.span, "not implemented in Noto 0.5")
                 .with_note("a value type is copied on assignment, which needs the memory model")
                 .with_help("declare it as a `class` for now: an object is a reference"),
             );
@@ -112,7 +219,7 @@ impl Checker<'_> {
 
         let id = ClassId(self.classes.len() as u32);
         let qualified = self.qualify(&name);
-        let def = self.store.declare(qualified);
+        let def = self.store.declare(qualified, noto_types::DefKind::Class);
         let ty = self.store.intern(Type::Named { def, arguments: Vec::new() });
         self.classes.push(ClassInfo {
             name: name.clone(),
@@ -149,7 +256,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "default values for fields are not supported by this compiler yet",
                     )
-                    .with_primary(default.span, "not implemented in Noto 0.4"),
+                    .with_primary(default.span, "not implemented in Noto 0.5"),
                 );
             }
 
@@ -224,7 +331,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "generic methods are not supported by this compiler yet",
                 )
-                .with_primary(function.type_params[0].span, "not implemented in Noto 0.4"),
+                .with_primary(function.type_params[0].span, "not implemented in Noto 0.5"),
             );
             return;
         }
@@ -299,6 +406,71 @@ impl Checker<'_> {
         self.classes[class.0 as usize].methods.push(MethodInfo { name: short, function: id });
     }
 
+    /// Resolves the types of the data an enum's cases carry.
+    ///
+    /// Split from registering the enum for the same reason a class's fields
+    /// are: a case may carry a value of a type declared further down, or in
+    /// another module.
+    fn collect_enum_fields(&mut self, decl: &noto_ast::EnumItem) {
+        let Some(id) = self.own_enum(&decl.name.name) else {
+            // `declare_enum` reported why this declaration is not an enum.
+            return;
+        };
+
+        for (index, case) in decl.cases.iter().enumerate() {
+            if index >= self.enums[id.0 as usize].cases.len() {
+                break;
+            }
+            let mut fields: Vec<FieldInfo> = Vec::new();
+            for field in &case.fields {
+                if let Some(default) = &field.default {
+                    self.sink.emit(
+                        Diagnostic::error(
+                            codes::UNSUPPORTED_CONSTRUCT,
+                            "default values for case data are not supported by this compiler yet",
+                        )
+                        .with_primary(default.span, "not implemented in Noto 0.5"),
+                    );
+                }
+                let ty = match &field.ty {
+                    Some(ty) => self.resolve_type(ty),
+                    None => {
+                        self.sink.emit(
+                            Diagnostic::error(
+                                codes::CANNOT_INFER,
+                                format!("`{}` needs a declared type", field.name.name),
+                            )
+                            .with_primary(field.span, "no type to infer from here"),
+                        );
+                        self.store.error()
+                    }
+                };
+                if let Some(previous) = fields.iter().find(|seen| seen.name == field.name.name) {
+                    let previous = previous.span;
+                    self.sink.emit(
+                        Diagnostic::error(
+                            codes::DUPLICATE_NAME,
+                            format!(
+                                "`{}` is carried twice by `{}.{}`",
+                                field.name.name, decl.name.name, case.name.name
+                            ),
+                        )
+                        .with_primary(field.name.span, "named again here")
+                        .with_secondary(previous, "first here"),
+                    );
+                    continue;
+                }
+                fields.push(FieldInfo {
+                    name: field.name.name.clone(),
+                    ty,
+                    is_mutable: false,
+                    span: field.span,
+                });
+            }
+            self.enums[id.0 as usize].cases[index].fields = fields;
+        }
+    }
+
     fn report_unsupported(&mut self, item: &Item) {
         let name = item.describe();
         self.sink.emit(
@@ -306,7 +478,7 @@ impl Checker<'_> {
                 codes::UNSUPPORTED_CONSTRUCT,
                 format!("`{name}` declarations are not supported by this compiler yet"),
             )
-            .with_primary(item.span, "not implemented in Noto 0.4")
+            .with_primary(item.span, "not implemented in Noto 0.5")
             .with_note(
                 "the syntax is accepted so that tooling can read the whole language; \
                  code generation for it lands in a later release",
@@ -321,7 +493,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "extension functions are not supported by this compiler yet",
                 )
-                .with_primary(receiver.span, "not implemented in Noto 0.4"),
+                .with_primary(receiver.span, "not implemented in Noto 0.5"),
             );
             return;
         }
@@ -331,7 +503,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "generic functions are not supported by this compiler yet",
                 )
-                .with_primary(function.type_params[0].span, "not implemented in Noto 0.4"),
+                .with_primary(function.type_params[0].span, "not implemented in Noto 0.5"),
             );
             return;
         }
@@ -434,7 +606,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "`main` cannot be `async` in this compiler yet",
                 )
-                .with_primary(span, "not implemented in Noto 0.4"),
+                .with_primary(span, "not implemented in Noto 0.5"),
             );
         }
     }
@@ -663,7 +835,7 @@ impl Checker<'_> {
                             codes::UNSUPPORTED_CONSTRUCT,
                             "generic types are not supported by this compiler yet",
                         )
-                        .with_primary(ty.span, "not implemented in Noto 0.4"),
+                        .with_primary(ty.span, "not implemented in Noto 0.5"),
                     );
                     return self.store.error();
                 }
@@ -689,7 +861,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "list types are not supported by this compiler yet",
                     )
-                    .with_primary(ty.span, "not implemented in Noto 0.4"),
+                    .with_primary(ty.span, "not implemented in Noto 0.5"),
                 );
                 self.store.error()
             }
@@ -704,6 +876,9 @@ impl Checker<'_> {
         }
         if let Some(id) = self.lookup_type(name) {
             return self.classes[id.0 as usize].ty;
+        }
+        if let Some(id) = self.lookup_enum(name) {
+            return self.enums[id.0 as usize].ty;
         }
         match name {
             "String" => self.store.string(),

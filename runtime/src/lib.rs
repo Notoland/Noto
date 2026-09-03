@@ -117,6 +117,12 @@ pub enum Routine {
     StringConcat,
     /// `string_length(string) -> length`.
     StringLength,
+    /// `string_equals(left, right) -> bool`.
+    ///
+    /// Compares contents, not addresses. Two strings built different ways
+    /// from the same bytes are equal, which is the only definition a user
+    /// can reason about.
+    StringEquals,
     /// `assert(condition)`. Ends the process when the condition is false.
     Assert,
     /// `newline()`: writes a single line break.
@@ -143,6 +149,7 @@ impl Routine {
             BoolToString,
             StringConcat,
             StringLength,
+            StringEquals,
             Assert,
             Newline,
         ]
@@ -167,6 +174,7 @@ impl Routine {
             BoolToString => "noto_rt_bool_to_string",
             StringConcat => "noto_rt_string_concat",
             StringLength => "noto_rt_string_length",
+            StringEquals => "noto_rt_string_equals",
             Assert => "noto_rt_assert",
             Newline => "noto_rt_newline",
         }
@@ -179,7 +187,7 @@ impl Routine {
             Start | PrintlnEmpty | Newline => 0,
             Exit | Alloc | PrintString | PrintlnString | PrintInt | PrintlnInt | PrintBool
             | PrintlnBool | IntToString | BoolToString | StringLength | Assert => 1,
-            StringConcat => 2,
+            StringConcat | StringEquals => 2,
             Write => 3,
         }
     }

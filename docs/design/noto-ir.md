@@ -71,6 +71,12 @@ word**, so field *n* lives at *n × 8*. That wastes space on a `Bool` and
 keeps every access aligned, and it is what makes the alternative easy to see
 in a diff when the memory model settles.
 
+An enum case's values sit behind the same three instructions: `alloc` a word
+for the tag plus one per value the widest case carries, `store` the tag at
+offset zero, and `load` the payload once a match has proved which case is
+live. An enum whose cases carry nothing never reaches the IR as an object at
+all — it is an `i64` holding the tag.
+
 `alloc` calls the runtime's bump allocator, which never frees. The memory it
 returns is uninitialised — the code that allocates an object writes every
 field before the pointer escapes.

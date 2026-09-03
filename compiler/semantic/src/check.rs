@@ -186,7 +186,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "declarations inside a function body are not supported yet",
                     )
-                    .with_primary(stmt.span, "not implemented in Noto 0.4")
+                    .with_primary(stmt.span, "not implemented in Noto 0.5")
                     .with_help("move the declaration to the top level of the file"),
                 );
                 self.store.unit()
@@ -270,7 +270,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this pattern is not supported in a binding yet",
                     )
-                    .with_primary(pattern.span, "not implemented in Noto 0.4")
+                    .with_primary(pattern.span, "not implemented in Noto 0.5")
                     .with_help("bind a name, a tuple of names, or `_`"),
                 );
             }
@@ -291,7 +291,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         format!("cannot iterate over a `{rendered}` yet"),
                     )
-                    .with_primary(iterable.span, "not iterable in Noto 0.4")
+                    .with_primary(iterable.span, "not iterable in Noto 0.5")
                     .with_help("iterate over a range, as in `for i in 0..10`"),
                 );
                 self.store.error()
@@ -362,7 +362,7 @@ impl Checker<'_> {
                     let ty = self.check_expr_expecting(bound, int);
                     self.expect_assignable(ty, int, bound.span, None);
                 }
-                // Ranges exist only inside `for` and `when` in Noto 0.4; there
+                // Ranges exist only inside `for` and `when` in Noto 0.5; there
                 // is no first-class `Range` type to give them yet.
                 self.store.unit()
             }
@@ -380,7 +380,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this expression is not supported by this compiler yet",
                     )
-                    .with_primary(expr.span, "not implemented in Noto 0.4"),
+                    .with_primary(expr.span, "not implemented in Noto 0.5"),
                 );
                 self.store.error()
             }
@@ -692,7 +692,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "`in` is not supported outside a `when` arm yet",
                     )
-                    .with_primary(span, "not implemented in Noto 0.4"),
+                    .with_primary(span, "not implemented in Noto 0.5"),
                 );
                 bool_ty
             }
@@ -955,12 +955,23 @@ impl Checker<'_> {
         let mut result: Option<TypeId> = None;
         let mut has_else = false;
 
+        let mut covered: Vec<u32> = Vec::new();
+
         for arm in arms {
             self.scopes.push();
 
             for pattern in &arm.patterns {
                 let expected = subject_ty.unwrap_or_else(|| self.store.error());
                 self.check_pattern(pattern, expected);
+                // An unguarded arm is what actually covers a case; one behind
+                // a guard may still fall through.
+                if arm.guard.is_none() {
+                    if let Some(Resolution::EnumCase { index, .. }) =
+                        self.resolutions.get(&pattern.id)
+                    {
+                        covered.push(*index);
+                    }
+                }
             }
             if let Some(guard) = &arm.guard {
                 self.check_condition(&guard.condition);
@@ -992,24 +1003,57 @@ impl Checker<'_> {
 
         let result = result.unwrap_or_else(|| self.store.unit());
 
-        // Without an `else` arm the `when` may match nothing, so it cannot be
-        // relied on for a value. Exhaustiveness over sealed types will relax
-        // this once those exist.
+        // Matching every case of an enum is as complete as an `else`, and
+        // saying so is the point of an enum: adding a case then turns every
+        // `when` over it into an error that names what is missing.
+        let missing = subject_ty.and_then(|ty| self.uncovered_cases(ty, &covered));
+        let is_exhaustive = has_else || missing.as_ref().is_some_and(Vec::is_empty);
+
         let unit = self.store.unit();
-        if !has_else && result != unit && !self.store.get(result).is_error() {
+        if !is_exhaustive && result != unit && !self.store.get(result).is_error() {
             let rendered = self.store.render(result);
-            self.sink.emit(
-                Diagnostic::error(
-                    codes::NON_EXHAUSTIVE_WHEN,
-                    "this `when` produces a value but does not cover every case",
-                )
-                .with_primary(span, format!("no arm matches some values, so there is no `{rendered}` to produce"))
-                .with_help("add an `else ->` arm"),
+            let mut diagnostic = Diagnostic::error(
+                codes::NON_EXHAUSTIVE_WHEN,
+                "this `when` produces a value but does not cover every case",
+            )
+            .with_primary(
+                span,
+                format!("no arm matches some values, so there is no `{rendered}` to produce"),
             );
+            diagnostic = match &missing {
+                Some(missing) => {
+                    let names: Vec<String> =
+                        missing.iter().map(|name| format!("`{name}`")).collect();
+                    diagnostic
+                        .with_note(format!("not covered: {}", names.join(", ")))
+                        .with_help("add an arm for each, or an `else ->` arm")
+                }
+                None => diagnostic.with_help("add an `else ->` arm"),
+            };
+            self.sink.emit(diagnostic);
             return self.store.error();
         }
 
         result
+    }
+
+    /// The cases of `ty` that `covered` leaves out, or `None` if `ty` is not
+    /// an enum.
+    fn uncovered_cases(&self, ty: TypeId, covered: &[u32]) -> Option<Vec<String>> {
+        // A nullable enum has one more possibility than its cases — `null` —
+        // which no case pattern covers, so it is never exhaustive this way.
+        if self.store.is_nullable(ty) {
+            return None;
+        }
+        let (_, info) = self.enum_of(ty)?;
+        Some(
+            info.cases
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| !covered.contains(&(*index as u32)))
+                .map(|(_, case)| case.name.clone())
+                .collect(),
+        )
     }
 
     /// Checks a pattern against the type it will be matched against.
@@ -1033,6 +1077,9 @@ impl Checker<'_> {
                     self.expect_assignable(ty, expected, bound.span, None);
                 }
             }
+            PatternKind::EnumCase { path, fields } => {
+                self.check_enum_pattern(pattern, path, fields.as_deref(), expected);
+            }
             PatternKind::Null => {
                 if !self.store.is_nullable(expected) && !self.store.get(expected).is_error() {
                     let rendered = self.store.render(expected);
@@ -1051,10 +1098,107 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this pattern is not supported by this compiler yet",
                     )
-                    .with_primary(pattern.span, "not implemented in Noto 0.4"),
+                    .with_primary(pattern.span, "not implemented in Noto 0.5"),
                 );
             }
         }
+    }
+
+    /// Checks `Red` or `Color.Red` as a `when` pattern.
+    ///
+    /// The scrutinee's type says which enum the case must belong to, which is
+    /// what lets an arm be written as the bare case name.
+    fn check_enum_pattern(
+        &mut self,
+        pattern: &Pattern,
+        path: &noto_ast::Path,
+        fields: Option<&[Pattern]>,
+        expected: TypeId,
+    ) {
+        if self.store.get(expected).is_error() {
+            return;
+        }
+
+        let written = path.to_dotted();
+        let Some((id, info)) = self.enum_of(self.store.unwrap_nullable(expected)) else {
+            let rendered = self.store.render(expected);
+            self.sink.emit(
+                Diagnostic::error(
+                    codes::TYPE_MISMATCH,
+                    format!("`{written}` is a case, but this `when` matches a `{rendered}`"),
+                )
+                .with_primary(pattern.span, "not a case of anything")
+                .with_help("match on an enum, or use a value pattern"),
+            );
+            return;
+        };
+
+        // `Red` and `Color.Red` name the same case; the qualified form is
+        // what makes an arm readable away from its declaration.
+        let case_name = match written.split_once('.') {
+            Some((qualifier, rest)) if qualifier == info.name => rest.to_string(),
+            Some(_) | None => written.clone(),
+        };
+
+        let (enum_name, cases) = (info.name.clone(), Self::case_list(info));
+        let Some((index, _)) = info.case(&case_name) else {
+            self.sink.emit(
+                Diagnostic::error(
+                    codes::UNKNOWN_MEMBER,
+                    format!("`{enum_name}` has no case `{case_name}`"),
+                )
+                .with_primary(pattern.span, "no such case")
+                .with_note(cases),
+            );
+            return;
+        };
+
+        let carried: Vec<TypeId> = info.cases[index as usize]
+            .fields
+            .iter()
+            .map(|field| field.ty)
+            .collect();
+
+        match fields {
+            Some(patterns) => {
+                if carried.is_empty() {
+                    if let Some(first) = patterns.first() {
+                        self.sink.emit(
+                            Diagnostic::error(
+                                codes::ARITY_MISMATCH,
+                                format!("`{enum_name}.{case_name}` carries no data"),
+                            )
+                            .with_primary(first.span, "nothing to destructure here"),
+                        );
+                    }
+                } else if patterns.len() != carried.len() {
+                    self.sink.emit(
+                        Diagnostic::error(
+                            codes::ARITY_MISMATCH,
+                            format!(
+                                "`{enum_name}.{case_name}` carries {} value{}, but {} {} matched",
+                                carried.len(),
+                                if carried.len() == 1 { "" } else { "s" },
+                                patterns.len(),
+                                if patterns.len() == 1 { "is" } else { "are" },
+                            ),
+                        )
+                        .with_primary(pattern.span, "the shapes do not line up"),
+                    );
+                }
+                for (sub, expected) in patterns.iter().zip(&carried) {
+                    self.check_pattern(sub, *expected);
+                }
+            }
+            None if !carried.is_empty() => {
+                // Matching a case that carries data without naming what it
+                // carries is legal and common: the arm only cares which case
+                // it is.
+            }
+            None => {}
+        }
+
+        self.record_resolution(pattern.id, Resolution::EnumCase { enum_id: id, index });
     }
 
     fn check_return(&mut self, value: Option<&Expr>, span: Span) -> TypeId {
@@ -1114,7 +1258,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "explicit type arguments are not supported by this compiler yet",
                 )
-                .with_primary(expr.span, "not implemented in Noto 0.4"),
+                .with_primary(expr.span, "not implemented in Noto 0.5"),
             );
         }
 
@@ -1125,7 +1269,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "named arguments are not supported by this compiler yet",
                     )
-                    .with_primary(name.span, "not implemented in Noto 0.4")
+                    .with_primary(name.span, "not implemented in Noto 0.5")
                     .with_help("pass the arguments positionally"),
                 );
             }
@@ -1147,6 +1291,14 @@ impl Checker<'_> {
         if let ExprKind::Path(path) = &call.callee.kind {
             if let Some(Resolution::Class(id)) = self.lookup_value(&path.to_dotted()) {
                 return self.check_construction(expr, call, id);
+            }
+        }
+
+        // A case carrying data is constructed by calling it:
+        // `Shape.Circle(3)`.
+        if let ExprKind::Member { receiver, name, safe: false } = &call.callee.kind {
+            if let Some(id) = self.receiver_enum(receiver) {
+                return self.check_case_construction(expr, call, id, name);
             }
         }
 
@@ -1176,7 +1328,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "safe calls are not supported by this compiler yet",
                     )
-                    .with_primary(expr.span, "not implemented in Noto 0.4"),
+                    .with_primary(expr.span, "not implemented in Noto 0.5"),
                 );
                 return self.store.error();
             }
@@ -1295,6 +1447,147 @@ impl Checker<'_> {
         result
     }
 
+    /// The enum a receiver expression names, if it names one.
+    fn receiver_enum(&mut self, receiver: &Expr) -> Option<crate::EnumId> {
+        let id = match &receiver.kind {
+            ExprKind::Path(path) => {
+                let written = path.to_dotted();
+                // The scope is asked first because a binding shadows the
+                // enum's name: after `val Colour = 1`, `Colour.x` reads a
+                // member of that value.
+                match self.scopes.lookup(&written) {
+                    Some(Resolution::Enum(id)) => id,
+                    Some(_) => return None,
+                    None => self.lookup_enum(&written)?,
+                }
+            }
+            // `paint.Colour.Red`: the case's receiver is itself an enum
+            // reached through an imported namespace.
+            ExprKind::Member { receiver: inner, name, safe: false } => {
+                let module = self.receiver_module(inner)?;
+                self.export_enum(module, &name.name)?
+            }
+            _ => return None,
+        };
+
+        self.record_resolution(receiver.id, Resolution::Enum(id));
+        Some(id)
+    }
+
+    /// Checks `Color.Red`.
+    fn check_enum_case(
+        &mut self,
+        expr: &Expr,
+        id: crate::EnumId,
+        name: &noto_ast::Ident,
+    ) -> TypeId {
+        let info = &self.enums[id.0 as usize];
+        let (enum_name, ty) = (info.name.clone(), info.ty);
+        let Some((index, _)) = info.case(&name.name) else {
+            let note = Self::case_list(info);
+            self.sink.emit(
+                Diagnostic::error(
+                    codes::UNKNOWN_MEMBER,
+                    format!("`{enum_name}` has no case `{}`", name.name),
+                )
+                .with_primary(name.span, "no such case")
+                .with_note(note),
+            );
+            return self.store.error();
+        };
+        self.record_resolution(expr.id, Resolution::EnumCase { enum_id: id, index });
+        ty
+    }
+
+    /// Checks `Shape.Circle(3)`: a case applied to one value per field.
+    fn check_case_construction(
+        &mut self,
+        expr: &Expr,
+        call: &noto_ast::CallExpr,
+        id: crate::EnumId,
+        name: &noto_ast::Ident,
+    ) -> TypeId {
+        let info = &self.enums[id.0 as usize];
+        let (enum_name, ty) = (info.name.clone(), info.ty);
+        let Some((index, case)) = info.case(&name.name) else {
+            let note = Self::case_list(info);
+            self.sink.emit(
+                Diagnostic::error(
+                    codes::UNKNOWN_MEMBER,
+                    format!("`{enum_name}` has no case `{}`", name.name),
+                )
+                .with_primary(name.span, "no such case")
+                .with_note(note),
+            );
+            for argument in &call.arguments {
+                self.check_expr(&argument.value);
+            }
+            return self.store.error();
+        };
+
+        let case_name = case.name.clone();
+        let fields: Vec<(String, TypeId, Span)> = case
+            .fields
+            .iter()
+            .map(|field| (field.name.clone(), field.ty, field.span))
+            .collect();
+
+        if fields.is_empty() {
+            self.sink.emit(
+                Diagnostic::error(
+                    codes::ARITY_MISMATCH,
+                    format!("`{enum_name}.{case_name}` carries no data"),
+                )
+                .with_primary(expr.span, "nothing to pass here")
+                .with_help(format!("write it as `{enum_name}.{case_name}`")),
+            );
+            for argument in &call.arguments {
+                self.check_expr(&argument.value);
+            }
+            return ty;
+        }
+
+        self.check_argument_count(
+            expr.span,
+            call.arguments.len(),
+            fields.len(),
+            &format!("{enum_name}.{case_name}"),
+        );
+
+        for (argument, (field, expected, declared_at)) in call.arguments.iter().zip(&fields) {
+            let found = self.check_expr_expecting(&argument.value, *expected);
+            if !self.store.is_assignable(found, *expected) {
+                let (found, expected) = (self.store.render(found), self.store.render(*expected));
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::TYPE_MISMATCH,
+                        format!("`{enum_name}.{case_name}.{field}` is a `{expected}`"),
+                    )
+                    .with_primary(argument.value.span, format!("this is a `{found}`"))
+                    .with_secondary(*declared_at, "declared here"),
+                );
+            }
+        }
+        for argument in call.arguments.iter().skip(fields.len()) {
+            self.check_expr(&argument.value);
+        }
+
+        self.record_resolution(call.callee.id, Resolution::EnumCase { enum_id: id, index });
+        self.record_resolution(expr.id, Resolution::EnumCase { enum_id: id, index });
+        self.record_type(call.callee.id, ty);
+        ty
+    }
+
+    /// Lists an enum's cases for a diagnostic.
+    fn case_list(info: &crate::EnumInfo) -> String {
+        if info.cases.is_empty() {
+            return format!("`{}` has no cases", info.name);
+        }
+        let names: Vec<String> =
+            info.cases.iter().map(|case| format!("`{}`", case.name)).collect();
+        format!("`{}` has {}", info.name, names.join(", "))
+    }
+
     /// The module a receiver expression names, if it names one.
     ///
     /// Only a bare name can be a namespace: a module is not a value, so it
@@ -1332,6 +1625,21 @@ impl Checker<'_> {
                     info.parameters.iter().map(|local| self.locals[local.0 as usize].ty).collect();
                 let (result, is_async) = (info.result, info.is_async);
                 self.store.intern(Type::Function { parameters, result, is_async })
+            }
+            Some(Resolution::Enum(_)) => {
+                let path = self.modules[module.0 as usize].clone();
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::UNKNOWN_NAME,
+                        format!("`{}` is an enum, not a value", name.name),
+                    )
+                    .with_primary(name.span, "an enum names its cases, it is not one")
+                    .with_help(format!(
+                        "name a case: `{path}.{}.SomeCase`",
+                        name.name
+                    )),
+                );
+                self.store.error()
             }
             _ => {
                 self.report_missing_export(module, name);
@@ -1592,6 +1900,12 @@ impl Checker<'_> {
             return self.check_qualified_name(expr, module, name);
         }
 
+        // `Color.Red` names a case. The enum is a type, not a value, so the
+        // receiver is never evaluated here either.
+        if let Some(id) = self.receiver_enum(receiver) {
+            return self.check_enum_case(expr, id, name);
+        }
+
         let receiver_ty = self.check_expr(receiver);
         let base = self.store.unwrap_nullable(receiver_ty);
 
@@ -1643,7 +1957,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "safe field access is not supported by this compiler yet",
                     )
-                    .with_primary(expr.span, "not implemented in Noto 0.4"),
+                    .with_primary(expr.span, "not implemented in Noto 0.5"),
                 );
                 return self.store.error();
             }

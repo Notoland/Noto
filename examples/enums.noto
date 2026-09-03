@@ -1,0 +1,98 @@
+// Enums in Noto 0.5. Run the tests with `noto test examples/enums.noto`.
+
+enum Direction { North, East, South, West }
+
+enum Signal { Stop, Caution, Go }
+
+/// The direction reached by turning right from `d`.
+fn right(d: Direction): Direction = when (d) {
+    North -> Direction.East
+    East -> Direction.South
+    South -> Direction.West
+    West -> Direction.North
+}
+
+/// A `when` over every case needs no `else`: the compiler knows the list is
+/// complete, and adding a case turns this into an error that names it.
+fn label(d: Direction): String = when (d) {
+    North -> "norte"
+    East -> "leste"
+    South -> "sul"
+    West -> "oeste"
+}
+
+fn advice(s: Signal): String = when (s) {
+    Stop -> "pare"
+    Caution -> "atenção"
+    Go -> "siga"
+}
+
+test "turning right four times comes back around" {
+    var d = Direction.North
+    var turns = 0
+    while turns < 4 {
+        d = right(d)
+        turns += 1
+    }
+    assert(d == Direction.North)
+}
+
+test "each case has its own label" {
+    assert(label(Direction.North) == "norte")
+    assert(label(Direction.West) == "oeste")
+}
+
+test "two enums with the same shape are different types" {
+    assert(advice(Signal.Stop) == "pare")
+    assert(label(Direction.North) == "norte")
+}
+
+// A case may carry data. The enum is then a pointer to its tag followed by
+// what the live case carries, and a pattern names those values.
+enum Shape {
+    Circle(radius: Int),
+    Rect(width: Int, height: Int),
+    Empty
+}
+
+fn area(s: Shape): Int = when (s) {
+    Circle(r) -> 3 * r * r
+    Rect(w, h) -> w * h
+    Empty -> 0
+}
+
+fn describe(s: Shape): String = when (s) {
+    Circle(r) -> "circle of radius $r"
+    Rect(w, h) -> "rect ${w}x$h"
+    Empty -> "nothing"
+}
+
+test "a case carries its values into the arm that matches it" {
+    assert(area(Shape.Circle(2)) == 12)
+    assert(area(Shape.Rect(3, 4)) == 12)
+    assert(area(Shape.Empty) == 0)
+}
+
+test "a case that carries nothing still belongs to the enum" {
+    assert(describe(Shape.Empty) == "nothing")
+}
+
+test "the values are read only from the case that matched" {
+    assert(describe(Shape.Rect(3, 4)) == "rect 3x4")
+    assert(describe(Shape.Circle(7)) == "circle of radius 7")
+}
+
+fn main() {
+    var d = Direction.North
+    var turns = 0
+    while turns < 4 {
+        println("${label(d)} -> ${label(right(d))}")
+        d = right(d)
+        turns += 1
+    }
+    println(advice(Signal.Go))
+
+    println(describe(Shape.Circle(5)))
+    println(describe(Shape.Rect(3, 4)))
+    println("area: ${area(Shape.Rect(3, 4))}")
+}

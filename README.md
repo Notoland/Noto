@@ -23,13 +23,13 @@ Hello, Noto!
 
 ## Status
 
-**Noto is in early development.** Version 0.4 is a working compiler for a real
+**Noto is in early development.** Version 0.5 is a working compiler for a real
 subset of the language, not a finished product. The pipeline runs end to end:
 source becomes a native Linux x86-64 executable that you can run.
 
 What that means in practice:
 
-- **418 tests pass, zero failures, zero warnings.**
+- **444 tests pass, zero failures, zero warnings.**
 - Constructs that are not implemented yet are **rejected with a clear error**,
   never silently accepted and miscompiled.
 - The parser covers the whole language; the back end does not yet.
@@ -95,6 +95,26 @@ is compiled to a function taking the receiver first, so it spends one of the
 six argument registers and takes at most five parameters of its own.
 Inheritance, interfaces and generics are not implemented yet.
 
+Enums:
+
+```noto
+enum Shape {
+    Circle(radius: Int),
+    Rect(width: Int, height: Int),
+    Empty
+}
+
+fn area(s: Shape): Int = when (s) {
+    Circle(r) -> 3 * r * r
+    Rect(w, h) -> w * h
+    Empty -> 0
+}
+```
+
+Covering every case is as complete as an `else`, so adding a case later turns
+every `when` over the enum into an error naming what is missing. An enum
+whose cases carry nothing *is* its tag — an `Int`, no allocation.
+
 Modules:
 
 ```noto
@@ -137,6 +157,8 @@ sem valor
 - `class` with fields and methods: a constructor, field reads, field writes,
   `this`
 - `import` and `export`: a program made of many files
+- `enum` with cases that may carry data, and a `when` that checks it covered
+  every case
 
 ## Design
 

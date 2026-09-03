@@ -244,6 +244,8 @@ pub enum Intrinsic {
     StringConcat,
     /// The length of a string in bytes.
     StringLength,
+    /// Whether two strings hold the same bytes.
+    StringEquals,
     /// Aborts the program unless the argument is `true`.
     Assert,
     /// Ends the process with the given exit status.
@@ -266,6 +268,7 @@ impl Intrinsic {
             BoolToString => "bool_to_string",
             StringConcat => "string_concat",
             StringLength => "string_length",
+            StringEquals => "string_equals",
             Assert => "assert",
             Exit => "exit",
         }
@@ -277,6 +280,7 @@ impl Intrinsic {
         match self {
             IntToString | BoolToString | StringConcat => IrType::Str,
             StringLength => IrType::I64,
+            StringEquals => IrType::Bool,
             _ => IrType::Unit,
         }
     }

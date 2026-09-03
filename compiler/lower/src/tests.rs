@@ -511,3 +511,87 @@ fn this_reads_the_receiver_parameter() {
     assert!(ir.contains("load $0"), "the receiver is slot zero: {ir}");
     assert!(ir.contains("load [%"), "and its field is read through it: {ir}");
 }
+
+// --- enums -----------------------------------------------------------------
+
+#[test]
+fn an_enum_case_is_its_tag() {
+    let ir = function_ir(
+        "enum Colour { Red, Green, Blue }\nfn third(): Colour = Colour.Blue\n",
+        "third",
+    );
+    assert!(ir.contains("2:i64"), "the third case is tag two: {ir}");
+    assert!(!ir.contains("alloc"), "an enum with no data needs no heap: {ir}");
+}
+
+#[test]
+fn matching_a_case_compares_the_tag() {
+    let ir = function_ir(
+        "enum Colour { Red, Green }\n\
+         fn name(c: Colour): Int = when (c) {\n    Red -> 0\n    Green -> 1\n}\n",
+        "name",
+    );
+    assert!(ir.contains("eq"), "a case test is an equality: {ir}");
+    assert!(!ir.contains("alloc"), "{ir}");
+}
+
+#[test]
+fn an_enum_valued_parameter_is_an_integer() {
+    let program = lower_source(
+        "enum Colour { Red }\nfn take(c: Colour): Colour = c\n",
+    );
+    let function = program.function_named("take").expect("the function");
+    assert_eq!(function.result, noto_ir::IrType::I64);
+}
+
+#[test]
+fn a_case_with_data_allocates_a_tag_and_its_payload() {
+    let ir = function_ir(
+        "enum Shape { Circle(r: Int), Rect(w: Int, h: Int) }\n\
+         fn make(): Shape = Shape.Circle(5)\n",
+        "make",
+    );
+    // The widest case carries two values, so every case is three words.
+    assert!(ir.contains("alloc 24"), "{ir}");
+    assert!(ir.contains("store [%0+0] 0:i64"), "the tag comes first: {ir}");
+    assert!(ir.contains("store [%0+8] 5:i64"), "then the payload: {ir}");
+}
+
+#[test]
+fn a_case_carrying_nothing_still_gets_an_object_when_its_enum_has_data() {
+    let ir = function_ir(
+        "enum Shape { Circle(r: Int), Point }\nfn make(): Shape = Shape.Point\n",
+        "make",
+    );
+    assert!(ir.contains("alloc"), "the enum is a pointer, so every case is one: {ir}");
+    assert!(ir.contains("store [%0+0] 1:i64"), "{ir}");
+}
+
+#[test]
+fn matching_a_case_with_data_reads_the_tag_through_the_pointer() {
+    let ir = function_ir(
+        "enum Shape { Circle(r: Int), Point }\n\
+         fn f(s: Shape): Int = when (s) {\n    Circle(r) -> r\n    Point -> 0\n}\n",
+        "f",
+    );
+    assert!(ir.contains("load [%"), "the tag is the first word of the object: {ir}");
+    assert!(ir.contains("+8]"), "and the payload follows it: {ir}");
+}
+
+#[test]
+fn string_equality_compares_contents_rather_than_addresses() {
+    let ir = function_ir(
+        "fn same(a: String, b: String): Bool = a == b\n",
+        "same",
+    );
+    assert!(ir.contains("string_equals"), "{ir}");
+    // `= eq ` would be the machine comparison, which compares the pointers.
+    assert!(!ir.contains("= eq "), "comparing the pointers would be the wrong answer: {ir}");
+}
+
+#[test]
+fn string_inequality_negates_the_comparison() {
+    let ir = function_ir("fn differ(a: String, b: String): Bool = a != b\n", "differ");
+    assert!(ir.contains("string_equals"), "{ir}");
+    assert!(ir.contains("not"), "{ir}");
+}

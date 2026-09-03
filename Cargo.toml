@@ -23,7 +23,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 rust-version = "1.75"
 license = "Apache-2.0"
@@ -32,22 +32,22 @@ homepage = "https://github.com/Notoland/Noto"
 authors = ["The Noto Project"]
 
 [workspace.dependencies]
-noto-span        = { path = "compiler/span",        version = "0.4.0" }
-noto-diagnostics = { path = "compiler/diagnostics", version = "0.4.0" }
-noto-lexer       = { path = "compiler/lexer",       version = "0.4.0" }
-noto-ast         = { path = "compiler/ast",         version = "0.4.0" }
-noto-parser      = { path = "compiler/parser",      version = "0.4.0" }
-noto-types       = { path = "compiler/types",       version = "0.4.0" }
-noto-semantic    = { path = "compiler/semantic",    version = "0.4.0" }
-noto-ir          = { path = "compiler/ir",          version = "0.4.0" }
-noto-lower       = { path = "compiler/lower",       version = "0.4.0" }
-noto-optimizer   = { path = "compiler/optimizer",   version = "0.4.0" }
-noto-codegen     = { path = "compiler/codegen",     version = "0.4.0" }
-noto-driver      = { path = "compiler/driver",      version = "0.4.0" }
-noto-runtime     = { path = "runtime",              version = "0.4.0" }
-noto-formatter   = { path = "formatter",            version = "0.4.0" }
-noto-linter      = { path = "linter",               version = "0.4.0" }
-noto-test-runner = { path = "test-runner",          version = "0.4.0" }
+noto-span        = { path = "compiler/span",        version = "0.5.0" }
+noto-diagnostics = { path = "compiler/diagnostics", version = "0.5.0" }
+noto-lexer       = { path = "compiler/lexer",       version = "0.5.0" }
+noto-ast         = { path = "compiler/ast",         version = "0.5.0" }
+noto-parser      = { path = "compiler/parser",      version = "0.5.0" }
+noto-types       = { path = "compiler/types",       version = "0.5.0" }
+noto-semantic    = { path = "compiler/semantic",    version = "0.5.0" }
+noto-ir          = { path = "compiler/ir",          version = "0.5.0" }
+noto-lower       = { path = "compiler/lower",       version = "0.5.0" }
+noto-optimizer   = { path = "compiler/optimizer",   version = "0.5.0" }
+noto-codegen     = { path = "compiler/codegen",     version = "0.5.0" }
+noto-driver      = { path = "compiler/driver",      version = "0.5.0" }
+noto-runtime     = { path = "runtime",              version = "0.5.0" }
+noto-formatter   = { path = "formatter",            version = "0.5.0" }
+noto-linter      = { path = "linter",               version = "0.5.0" }
+noto-test-runner = { path = "test-runner",          version = "0.5.0" }
 
 [profile.release]
 opt-level = 3

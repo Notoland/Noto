@@ -23,8 +23,9 @@ mod imports;
 mod scope;
 
 pub use analysis::{
-    Analysis, ClassId, ClassInfo, ConstId, ConstInfo, ConstValue, FieldInfo, FunctionId,
-    FunctionInfo, LocalId, LocalInfo, MethodInfo, ModuleId, Resolution, TestInfo,
+    Analysis, ClassId, ClassInfo, ConstId, ConstInfo, ConstValue, EnumCaseInfo, EnumId, EnumInfo,
+    FieldInfo, FunctionId, FunctionInfo, LocalId, LocalInfo, MethodInfo, ModuleId, Resolution,
+    TestInfo,
 };
 
 /// The name the receiver of a method is bound to.
@@ -95,6 +96,7 @@ pub fn analyze_program(modules: &[ModuleInput], sink: &mut DiagnosticSink) -> An
     checker.imports = modules.iter().map(|module| module.imports.to_vec()).collect();
     checker.module_names = vec![HashMap::new(); modules.len()];
     checker.module_types = vec![HashMap::new(); modules.len()];
+    checker.module_enums = vec![HashMap::new(); modules.len()];
     checker.exported = vec![HashSet::new(); modules.len()];
 
     for (index, module) in modules.iter().enumerate() {
@@ -146,6 +148,7 @@ struct Checker<'sink> {
     functions: Vec<FunctionInfo>,
     constants: Vec<ConstInfo>,
     classes: Vec<ClassInfo>,
+    enums: Vec<EnumInfo>,
     tests: Vec<TestInfo>,
     /// The module whose declarations are being collected or checked.
     current_module: ModuleId,
@@ -155,6 +158,8 @@ struct Checker<'sink> {
     imports: Vec<Vec<Import>>,
     /// Each module's own top-level value names.
     module_names: Vec<HashMap<String, Resolution>>,
+    /// Each module's own enum names.
+    module_enums: Vec<HashMap<String, EnumId>>,
     /// Each module's own type names.
     ///
     /// Types and values live in separate namespaces: `Point` as a type is
@@ -183,12 +188,14 @@ impl<'sink> Checker<'sink> {
             functions: Vec::new(),
             constants: Vec::new(),
             classes: Vec::new(),
+            enums: Vec::new(),
             tests: Vec::new(),
             current_module: ModuleId::ROOT,
             modules: vec![String::new()],
             imports: vec![Vec::new()],
             module_names: vec![HashMap::new()],
             module_types: vec![HashMap::new()],
+            module_enums: vec![HashMap::new()],
             exported: vec![HashSet::new()],
             entry: None,
             current_function: None,
@@ -204,6 +211,7 @@ impl<'sink> Checker<'sink> {
             functions: self.functions,
             constants: self.constants,
             classes: self.classes,
+            enums: self.enums,
             modules: self.modules,
             tests: self.tests,
             entry: self.entry,
@@ -227,6 +235,34 @@ impl<'sink> Checker<'sink> {
     /// A type declared by the module being checked.
     fn own_type(&self, name: &str) -> Option<ClassId> {
         self.module_types[self.current_module.0 as usize].get(name).copied()
+    }
+
+    /// An enum declared by the module being checked.
+    fn own_enum(&self, name: &str) -> Option<EnumId> {
+        self.module_enums[self.current_module.0 as usize].get(name).copied()
+    }
+
+    /// Resolves an enum name: this module's own, then what it imports.
+    fn lookup_enum(&self, name: &str) -> Option<EnumId> {
+        if let Some(id) = self.own_enum(name) {
+            return Some(id);
+        }
+        match name.split_once('.') {
+            Some((namespace, rest)) => {
+                let target = self.namespace(namespace)?;
+                self.export_enum(target, rest)
+            }
+            None => self.selective(name).and_then(|target| self.export_enum(target, name)),
+        }
+    }
+
+    /// An enum `target` exports under `name`.
+    fn export_enum(&self, target: ModuleId, name: &str) -> Option<EnumId> {
+        let index = target.0 as usize;
+        if !self.exported[index].contains(name) {
+            return None;
+        }
+        self.module_enums[index].get(name).copied()
     }
 
     /// Resolves a type name: this module's own, then what it imports.
@@ -293,6 +329,15 @@ impl<'sink> Checker<'sink> {
             return Some(Resolution::Module(module));
         }
         self.selective(name).and_then(|target| self.export_value(target, name))
+    }
+
+    /// The enum a type names, if it names one.
+    fn enum_of(&self, ty: TypeId) -> Option<(EnumId, &analysis::EnumInfo)> {
+        let def = self.store.get(ty).as_def()?;
+        self.enums
+            .iter()
+            .position(|item| item.def == def)
+            .map(|index| (EnumId(index as u32), &self.enums[index]))
     }
 
     /// The class a type names, if it names one.

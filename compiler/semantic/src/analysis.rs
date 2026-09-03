@@ -33,6 +33,10 @@ impl ModuleId {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct ClassId(pub u32);
 
+/// Identifies a declared enum.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct EnumId(pub u32);
+
 /// What a name in the program refers to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Resolution {
@@ -48,6 +52,15 @@ pub enum Resolution {
     Method(FunctionId),
     /// A module bound by an import, used as a namespace.
     Module(ModuleId),
+    /// A declared enum, named as a type or as the namespace of its cases.
+    Enum(EnumId),
+    /// One case of an enum.
+    EnumCase {
+        /// The enum it belongs to.
+        enum_id: EnumId,
+        /// Its position in the case list, which is also its tag.
+        index: u32,
+    },
     /// A field read or written through a receiver.
     Field {
         /// The class the field belongs to.
@@ -191,6 +204,54 @@ impl ClassInfo {
     }
 }
 
+/// One case of an enum.
+#[derive(Clone, Debug)]
+pub struct EnumCaseInfo {
+    /// The name as written.
+    pub name: String,
+    /// The data it carries, in declaration order; empty for a plain case.
+    pub fields: Vec<FieldInfo>,
+    /// Where it was declared.
+    pub span: Span,
+}
+
+/// A checked enum declaration.
+#[derive(Clone, Debug)]
+pub struct EnumInfo {
+    /// The name as written.
+    pub name: String,
+    /// The module that declares it.
+    pub module: ModuleId,
+    /// Whether it is visible to a module that imports this one.
+    pub is_exported: bool,
+    /// Its cases, in declaration order. A case's position is its tag.
+    pub cases: Vec<EnumCaseInfo>,
+    /// Whether any case carries data, which decides how a value is
+    /// represented: a pointer when it does, the tag itself when it does not.
+    pub has_data: bool,
+    /// The type that names it.
+    pub ty: TypeId,
+    /// The declaration id carried by that type.
+    pub def: DefId,
+    /// Where it was declared.
+    pub span: Span,
+}
+
+impl EnumInfo {
+    /// The most fields any one case carries, which sizes the payload.
+    pub fn widest_case(&self) -> usize {
+        self.cases.iter().map(|case| case.fields.len()).max().unwrap_or(0)
+    }
+
+    /// Looks a case up by name, returning its tag and what is known of it.
+    pub fn case(&self, name: &str) -> Option<(u32, &EnumCaseInfo)> {
+        self.cases
+            .iter()
+            .position(|case| case.name == name)
+            .map(|index| (index as u32, &self.cases[index]))
+    }
+}
+
 /// A checked test declaration.
 #[derive(Clone, Debug)]
 pub struct TestInfo {
@@ -220,6 +281,8 @@ pub struct Analysis {
     pub constants: Vec<ConstInfo>,
     /// Every class, indexed by [`ClassId`].
     pub classes: Vec<ClassInfo>,
+    /// Every enum, indexed by [`EnumId`].
+    pub enums: Vec<EnumInfo>,
     /// The name of every module, indexed by [`ModuleId`]; the root's is empty.
     pub modules: Vec<String>,
     /// Every test.
@@ -248,6 +311,20 @@ impl Analysis {
     /// Looks a class up by id.
     pub fn class(&self, id: ClassId) -> &ClassInfo {
         &self.classes[id.0 as usize]
+    }
+
+    /// Looks an enum up by id.
+    pub fn enum_at(&self, id: EnumId) -> &EnumInfo {
+        &self.enums[id.0 as usize]
+    }
+
+    /// The enum a type names, if it names one.
+    pub fn enum_of(&self, ty: TypeId) -> Option<(EnumId, &EnumInfo)> {
+        let def = self.store.get(ty).as_def()?;
+        self.enums
+            .iter()
+            .position(|item| item.def == def)
+            .map(|index| (EnumId(index as u32), &self.enums[index]))
     }
 
     /// The type recorded for a node, or the error type if there is none.
