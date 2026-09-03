@@ -36,22 +36,25 @@ fn functions(analysis: &Analysis, usage: &Usage, found: &mut Found) {
     for (index, function) in analysis.functions.iter().enumerate() {
         let id = FunctionId(index as u32);
         let is_test = function.name.starts_with(TEST_PREFIX);
+        // A method is named `Class.method`; the opt-out and the suggested
+        // rename are about the part the author actually wrote.
+        let written = function.name.rsplit('.').next().unwrap_or(&function.name);
         if is_test
             || analysis.entry == Some(id)
-            || is_ignored(&function.name)
+            || is_ignored(written)
             || usage.called.contains(&id)
         {
             continue;
         }
+        let what = if function.name.contains('.') { "method" } else { "function" };
         found.push(
             Diagnostic::warning(
                 codes::UNUSED_FUNCTION,
-                format!("function `{}` is never called", function.name),
+                format!("{what} `{}` is never called", function.name),
             )
             .with_primary(function.span, "declared here and never called")
             .with_help(format!(
-                "remove it, or rename it to `_{}` to say that is deliberate",
-                function.name
+                "remove it, or rename it to `_{written}` to say that is deliberate"
             )),
         );
     }
@@ -78,7 +81,9 @@ fn constants(analysis: &Analysis, usage: &Usage, found: &mut Found) {
 fn locals(analysis: &Analysis, usage: &Usage, found: &mut Found) {
     for (index, local) in analysis.locals.iter().enumerate() {
         let id = LocalId(index as u32);
-        if is_ignored(&local.name) {
+        // The receiver is bound by the compiler, not written by anyone, so
+        // there is no one to tell that it is unused.
+        if is_ignored(&local.name) || local.name == noto_semantic::RECEIVER_NAME {
             continue;
         }
 
@@ -140,7 +145,8 @@ impl Usage<'_> {
 impl Visitor for Usage<'_> {
     fn visit_expr(&mut self, expr: &Expr) {
         match &expr.kind {
-            ExprKind::Path(_) => match self.analysis.resolution(expr.id) {
+            // `this` names the receiver, which is a local like any other.
+            ExprKind::Path(_) | ExprKind::This => match self.analysis.resolution(expr.id) {
                 Some(Resolution::Local(id)) => {
                     self.reads.insert(id);
                 }
@@ -165,7 +171,15 @@ impl Visitor for Usage<'_> {
                 }
                 self.visit_expr(value);
             }
-            _ => visit::walk_expr(self, expr),
+            _ => {
+                // A method call resolves on its callee, which is a member
+                // expression rather than a path: `p.area()` calls `Point.area`
+                // as surely as `area()` would call a free function.
+                if let Some(Resolution::Method(id)) = self.analysis.resolution(expr.id) {
+                    self.called.insert(id);
+                }
+                visit::walk_expr(self, expr)
+            }
         }
     }
 }

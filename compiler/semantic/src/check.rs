@@ -25,6 +25,15 @@ impl Checker<'_> {
                     let Some(id) = self.function_id_for(&name) else { continue };
                     self.check_test_body(id, &test.body);
                 }
+                ItemKind::TypeDecl(decl) => {
+                    for method in &decl.methods {
+                        let ItemKind::Fn(function) = &method.kind else { continue };
+                        let name = format!("{}.{}", decl.name.name, function.name.name);
+                        let Some(id) = self.function_id_for(&name) else { continue };
+                        let Some(body) = &function.body else { continue };
+                        self.check_function_body(id, function, body);
+                    }
+                }
                 _ => {}
             }
         }
@@ -311,6 +320,7 @@ impl Checker<'_> {
         match &expr.kind {
             ExprKind::Literal(literal) => self.check_literal(literal, expr.span, expected),
             ExprKind::Path(path) => self.check_path(expr, path),
+            ExprKind::This => self.check_this(expr),
             ExprKind::Unary { op, operand } => self.check_unary(*op, operand, expr.span),
             ExprKind::Binary { op, left, right, op_span } => {
                 self.check_binary(*op, left, right, *op_span)
@@ -368,6 +378,29 @@ impl Checker<'_> {
                         "this expression is not supported by this compiler yet",
                     )
                     .with_primary(expr.span, "not implemented in Noto 0.3"),
+                );
+                self.store.error()
+            }
+        }
+    }
+
+    /// Checks `this`, which names the receiver a method was called on.
+    ///
+    /// The receiver is an ordinary parameter bound under a keyword, so this
+    /// is a scope lookup and nothing more.
+    fn check_this(&mut self, expr: &Expr) -> TypeId {
+        match self.scopes.lookup(crate::RECEIVER_NAME) {
+            Some(Resolution::Local(local)) => {
+                self.record_resolution(expr.id, Resolution::Local(local));
+                self.locals[local.0 as usize].ty
+            }
+            _ => {
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::OUTSIDE_FUNCTION,
+                        "`this` can only be used inside a method",
+                    )
+                    .with_primary(expr.span, "no receiver here"),
                 );
                 self.store.error()
             }
@@ -1140,6 +1173,24 @@ impl Checker<'_> {
                 );
                 return self.store.error();
             }
+            if let Some((_, class)) = self.class_of(base) {
+                let Some(method) = class.method(&name.name) else {
+                    let (class_name, note) = (class.name.clone(), Self::member_list(class));
+                    self.sink.emit(
+                        Diagnostic::error(
+                            codes::UNKNOWN_MEMBER,
+                            format!("`{class_name}` has no method `{}`", name.name),
+                        )
+                        .with_primary(name.span, "no such method")
+                        .with_note(note),
+                    );
+                    return self.store.error();
+                };
+                let function = method.function;
+                self.record_resolution(call.callee.id, Resolution::Method(function));
+                return self.check_method_arguments(expr, call, function);
+            }
+
             match builtins::member(&self.store, base, &name.name) {
                 Some(builtin) if !builtin.is_property() => {
                     self.record_resolution(call.callee.id, Resolution::Builtin(builtin));
@@ -1196,6 +1247,50 @@ impl Checker<'_> {
         }
 
         result
+    }
+
+    /// Checks the arguments of `receiver.method(...)`.
+    ///
+    /// The receiver is already checked and occupies the first parameter, so
+    /// only the written arguments are matched against what follows it.
+    fn check_method_arguments(
+        &mut self,
+        expr: &Expr,
+        call: &noto_ast::CallExpr,
+        function: FunctionId,
+    ) -> TypeId {
+        let info = &self.functions[function.0 as usize];
+        let (name, result) = (info.name.clone(), info.result);
+        let expected: Vec<TypeId> = info
+            .parameters
+            .iter()
+            .skip(1)
+            .map(|local| self.locals[local.0 as usize].ty)
+            .collect();
+
+        self.check_argument_count(expr.span, call.arguments.len(), expected.len(), &name);
+
+        for (argument, expected) in call.arguments.iter().zip(&expected) {
+            let found = self.check_expr_expecting(&argument.value, *expected);
+            self.expect_assignable(found, *expected, argument.value.span, None);
+        }
+        for argument in call.arguments.iter().skip(expected.len()) {
+            self.check_expr(&argument.value);
+        }
+
+        self.record_type(call.callee.id, result);
+        result
+    }
+
+    /// Lists what a class does have, for a diagnostic about what it does not.
+    fn member_list(class: &crate::analysis::ClassInfo) -> String {
+        let mut names: Vec<String> =
+            class.methods.iter().map(|method| format!("`{}`", method.name)).collect();
+        if names.is_empty() {
+            return format!("`{}` has no methods", class.name);
+        }
+        names.sort();
+        format!("`{}` has {}", class.name, names.join(", "))
     }
 
     /// Lists a class's fields for a diagnostic note.
@@ -1360,15 +1455,25 @@ impl Checker<'_> {
 
         if let Some((id, class)) = self.class_of(base) {
             let Some((index, field)) = class.field(&name.name) else {
-                let (class_name, fields) = (class.name.clone(), Self::field_list(class));
-                self.sink.emit(
+                let class_name = class.name.clone();
+                let mut diagnostic = if class.method(&name.name).is_some() {
+                    Diagnostic::error(
+                        codes::UNKNOWN_MEMBER,
+                        format!("`{}` is a method of `{class_name}`", name.name),
+                    )
+                    .with_primary(name.span, "a method is not a value")
+                    .with_help(format!("call it: `{}()`", name.name))
+                } else {
                     Diagnostic::error(
                         codes::UNKNOWN_MEMBER,
                         format!("`{class_name}` has no field `{}`", name.name),
                     )
                     .with_primary(name.span, "no such field")
-                    .with_note(fields),
-                );
+                };
+                if class.method(&name.name).is_none() {
+                    diagnostic = diagnostic.with_note(Self::field_list(class));
+                }
+                self.sink.emit(diagnostic);
                 return self.store.error();
             };
             let ty = field.ty;

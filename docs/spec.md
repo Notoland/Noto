@@ -32,7 +32,7 @@ test "addition works" {
   is a block, or `= expr` for an expression body.
 - Forward references work: a function may call one declared later.
 - At most **six parameters** (System V register limit); more is not
-  implemented.
+  implemented. A method's receiver is one of the six.
 - `const` declares a compile-time constant; constant expressions are folded.
 - `test "name" { … }` declares a test. Tests are collected, type checked and
   lowered as functions named `test$<name>`; `noto test` compiles one
@@ -63,6 +63,26 @@ same diagnostic a `val` binding gets.
 A class name may be used before it is declared, as a type or as a
 constructor, so declaration order in a file never matters.
 
+Methods are declared in the class body and called through a receiver:
+
+```noto
+class Counter(var count: Int) {
+    fn bump() {
+        this.count += 1
+    }
+
+    fn plus(n: Int): Int = this.count + n
+}
+```
+
+`this` names the receiver. A method is an ordinary function with the
+receiver as its first parameter — that is what it is compiled to, under the
+name `Class.method` — so **the receiver spends one of the six argument
+registers**: a method takes at most five parameters of its own.
+
+A method and a field cannot share a name. Reading a method without calling it
+(`counter.bump`) is an error: there are no method values yet.
+
 **An object is a reference.** `val b = a` makes `b` name the same object as
 `a`, and a change through one is visible through the other. Every object is
 allocated on the heap, which today never frees — see
@@ -72,10 +92,11 @@ That is why `struct` and the `data` flavours are still rejected: they promise
 value semantics, copied on assignment, and giving them reference semantics
 under a keyword that says otherwise would be worse than refusing them.
 
-Not implemented for classes: methods, properties with `get`/`set`, fields
-declared in the class body, default values for fields, inheritance,
-interfaces, generics, `data class` equality and printing. An object has no
-`toString`, so `println(p)` does not compile — print its fields.
+Not implemented for classes: properties with `get`/`set`, fields declared in
+the class body, default values for fields, inheritance, interfaces, generics,
+method values, `data class` equality and printing. An object has no
+`toString`, so `println(p)` does not compile — print its fields, or give the
+class a method that builds a `String`.
 
 ## Statements and termination
 

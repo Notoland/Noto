@@ -2,20 +2,31 @@
 
 class Point(val x: Int, val y: Int)
 
-class Counter(var count: Int)
+class Counter(var count: Int) {
+    fn bump() {
+        this.count += 1
+    }
 
-class Line(val from: Point, val to: Point)
-
-fn manhattan(line: Line): Int {
-    var distance = line.to.x - line.from.x
-    if distance < 0 { distance = -distance }
-    var vertical = line.to.y - line.from.y
-    if vertical < 0 { vertical = -vertical }
-    return distance + vertical
+    fn add(n: Int) {
+        this.count += n
+    }
 }
 
-fn bump(counter: Counter) {
-    counter.count += 1
+class Line(val from: Point, val to: Point) {
+    // A method may call another method of the same class.
+    fn length(): Int = this.horizontal() + this.vertical()
+
+    fn horizontal(): Int = distance(this.from.x, this.to.x)
+
+    fn vertical(): Int = distance(this.from.y, this.to.y)
+
+    fn describe(): String = "(${this.from.x}, ${this.from.y}) -> (${this.to.x}, ${this.to.y})"
+}
+
+fn distance(from: Int, to: Int): Int {
+    val difference = to - from
+    if difference < 0 { return -difference }
+    return difference
 }
 
 test "a field holds what the constructor was given" {
@@ -24,27 +35,40 @@ test "a field holds what the constructor was given" {
     assert(p.y == 4)
 }
 
-test "a var field can be reassigned through a receiver" {
+test "a method reassigns a var field through this" {
     val counter = Counter(0)
-    bump(counter)
-    bump(counter)
+    counter.bump()
+    counter.bump()
     assert(counter.count == 2)
+}
+
+test "a method takes its own parameters after the receiver" {
+    val counter = Counter(1)
+    counter.add(41)
+    assert(counter.count == 42)
 }
 
 test "an object is a reference, so two names see one object" {
     val counter = Counter(0)
     val same = counter
-    bump(same)
+    same.bump()
     assert(counter.count == 1)
 }
 
 test "a field can hold another object" {
     val line = Line(Point(1, 1), Point(4, 5))
     assert(line.from.x == 1)
-    assert(manhattan(line) == 7)
+    assert(line.length() == 7)
+}
+
+test "a method may call another method of the same class" {
+    val line = Line(Point(0, 0), Point(3, 4))
+    assert(line.horizontal() == 3)
+    assert(line.vertical() == 4)
+    assert(line.length() == 7)
 }
 
 fn main() {
     val line = Line(Point(0, 0), Point(3, 4))
-    println("distance = ${manhattan(line)}")
+    println("${line.describe()} has length ${line.length()}")
 }

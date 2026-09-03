@@ -96,6 +96,15 @@ fn collect_bodies(module: &Module) -> HashMap<NodeId, &noto_ast::Block> {
             ItemKind::Test(test) => {
                 bodies.insert(test.body.id, &test.body);
             }
+            ItemKind::TypeDecl(decl) => {
+                for method in &decl.methods {
+                    if let ItemKind::Fn(function) = &method.kind {
+                        if let Some(body) = &function.body {
+                            bodies.insert(body.id, body);
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }

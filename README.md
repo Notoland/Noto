@@ -29,7 +29,7 @@ source becomes a native Linux x86-64 executable that you can run.
 
 What that means in practice:
 
-- **373 tests pass, zero failures, zero warnings.**
+- **392 tests pass, zero failures, zero warnings.**
 - Constructs that are not implemented yet are **rejected with a clear error**,
   never silently accepted and miscompiled.
 - The parser covers the whole language; the back end does not yet.
@@ -71,12 +71,18 @@ fn main() {
 Objects:
 
 ```noto
-class Point(val x: Int, var y: Int)
+class Rect(val width: Int, var height: Int) {
+    fn area(): Int = this.width * this.height
+
+    fn scale(factor: Int) {
+        this.height = this.height * factor
+    }
+}
 
 fn main() {
-    val p = Point(3, 4)
-    p.y = 10
-    println(p.x + p.y)
+    val r = Rect(3, 4)
+    r.scale(2)
+    println(r.area())
 }
 ```
 
@@ -84,8 +90,10 @@ An object is a **reference**: `val b = a` makes both names see one object.
 That is why `struct` and `data class` are still rejected — they promise value
 semantics, and giving them reference semantics under a keyword that says
 otherwise would be worse than refusing them until the memory model is
-settled. Fields are read with `.` and written with `.` when declared `var`;
-`class` methods, inheritance and generics are not implemented yet.
+settled. Fields are read with `.` and written with `.` when declared `var`. A method
+is compiled to a function taking the receiver first, so it spends one of the
+six argument registers and takes at most five parameters of its own.
+Inheritance, interfaces and generics are not implemented yet.
 
 ```
 Olá, João! Soma = 55
@@ -105,7 +113,8 @@ sem valor
 - string interpolation and concatenation
 - `const` folded at compile time
 - `test "…" { … }` declarations, run by `noto test`
-- `class` with fields: a constructor, field reads, field writes
+- `class` with fields and methods: a constructor, field reads, field writes,
+  `this`
 
 ## Design
 

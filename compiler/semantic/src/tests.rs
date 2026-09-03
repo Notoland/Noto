@@ -596,6 +596,110 @@ fn a_class_type_takes_part_in_null_safety() {
     );
 }
 
+// --- methods ---------------------------------------------------------------
+
+#[test]
+fn a_method_is_collected_as_a_function_taking_the_receiver_first() {
+    let analysis = check_ok(
+        "class Rect(val width: Int, val height: Int) {\n             fn area(): Int = this.width * this.height\n         }\n         fn main() {\n    println(Rect(2, 3).area())\n}\n",
+    );
+    assert_eq!(analysis.classes[0].methods.len(), 1);
+    let method = &analysis.classes[0].methods[0];
+    assert_eq!(method.name, "area");
+
+    let function = &analysis.functions[method.function.0 as usize];
+    assert_eq!(function.name, "Rect.area", "the class prefix keeps it out of the free namespace");
+    assert_eq!(function.parameters.len(), 1, "the receiver is the only parameter");
+    assert_eq!(analysis.locals[function.parameters[0].0 as usize].name, "this");
+}
+
+#[test]
+fn a_method_takes_its_own_parameters_after_the_receiver() {
+    let analysis = check_ok(
+        "class Counter(var count: Int) {\n             fn add(n: Int) {\n        this.count = this.count + n\n    }\n         }\n         fn main() {\n    val c = Counter(0)\n    c.add(2)\n    println(c.count)\n}\n",
+    );
+    let method = analysis.classes[0].method("add").expect("the method");
+    let function = &analysis.functions[method.function.0 as usize];
+    assert_eq!(function.parameters.len(), 2);
+    assert_eq!(analysis.locals[function.parameters[1].0 as usize].name, "n");
+}
+
+#[test]
+fn a_method_may_call_another_method_of_the_same_class() {
+    check_ok(
+        "class Rect(val side: Int) {\n             fn area(): Int = this.side * this.side\n             fn twice(): Int = this.area() * 2\n         }\n         fn main() {\n    println(Rect(2).twice())\n}\n",
+    );
+}
+
+#[test]
+fn a_method_call_checks_its_arguments() {
+    check_error(
+        "class Counter(var count: Int) {\n    fn add(n: Int) {\n        this.count = n\n    }\n}\n         fn main() {\n    Counter(0).add(\"two\")\n}\n",
+        "expected `Int`",
+    );
+}
+
+#[test]
+fn a_method_call_checks_its_argument_count() {
+    check_error(
+        "class Counter(var count: Int) {\n    fn add(n: Int) {\n        this.count = n\n    }\n}\n         fn main() {\n    Counter(0).add()\n}\n",
+        "`Counter.add` takes 1 argument",
+    );
+}
+
+#[test]
+fn an_unknown_method_is_reported_with_the_ones_that_exist() {
+    check_error(
+        "class Rect(val side: Int) {\n    fn area(): Int = this.side\n}\n         fn main() {\n    println(Rect(1).volume())\n}\n",
+        "`Rect` has no method `volume`",
+    );
+}
+
+#[test]
+fn reading_a_method_without_calling_it_says_so() {
+    check_error(
+        "class Rect(val side: Int) {\n    fn area(): Int = this.side\n}\n         fn main() {\n    println(Rect(1).area)\n}\n",
+        "`area` is a method of `Rect`",
+    );
+}
+
+#[test]
+fn this_outside_a_method_is_reported() {
+    check_error("fn main() {\n    println(this)\n}\n", "`this` can only be used inside a method");
+}
+
+#[test]
+fn a_method_and_a_field_cannot_share_a_name() {
+    check_error(
+        "class Rect(val area: Int) {\n    fn area(): Int = 1\n}\nfn main() {}\n",
+        "already has a field named `area`",
+    );
+}
+
+#[test]
+fn a_method_declared_twice_is_reported() {
+    check_error(
+        "class Rect(val side: Int) {\n    fn area(): Int = 1\n    fn area(): Int = 2\n}\n         fn main() {}\n",
+        "`Rect.area` is declared more than once",
+    );
+}
+
+#[test]
+fn a_method_body_is_checked_like_any_other() {
+    check_error(
+        "class Rect(val side: Int) {\n    fn area(): Int = \"wide\"\n}\nfn main() {}\n",
+        "must produce a `Int`",
+    );
+}
+
+#[test]
+fn a_method_cannot_assign_to_a_val_field() {
+    check_error(
+        "class Rect(val side: Int) {\n    fn grow() {\n        this.side = 2\n    }\n}\n         fn main() {}\n",
+        "cannot assign to `Rect.side`",
+    );
+}
+
 // --- tests -----------------------------------------------------------------
 
 #[test]

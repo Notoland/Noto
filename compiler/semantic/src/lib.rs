@@ -23,8 +23,15 @@ mod scope;
 
 pub use analysis::{
     Analysis, ClassId, ClassInfo, ConstId, ConstInfo, ConstValue, FieldInfo, FunctionId,
-    FunctionInfo, LocalId, LocalInfo, Resolution, TestInfo,
+    FunctionInfo, LocalId, LocalInfo, MethodInfo, Resolution, TestInfo,
 };
+
+/// The name the receiver of a method is bound to.
+///
+/// It is a keyword rather than an identifier, so nothing the user writes can
+/// collide with it; binding it as an ordinary local is what lets `this` be
+/// looked up, type checked and lowered like any other parameter.
+pub const RECEIVER_NAME: &str = "this";
 pub use builtins::Builtin;
 
 use noto_ast::Module;

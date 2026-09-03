@@ -481,3 +481,33 @@ fn a_field_past_the_first_hundred_bytes_gets_its_real_offset() {
     let ir = function_ir(&source, "last");
     assert!(ir.contains("+152]"), "field 19 sits at 19 * 8: {ir}");
 }
+
+#[test]
+fn a_method_is_lowered_as_a_function_named_for_its_class() {
+    let program = lower_source(
+        "class Rect(val side: Int) {\n    fn area(): Int = this.side * this.side\n}\n",
+    );
+    assert!(program.function_named("Rect.area").is_some(), "{program}");
+}
+
+#[test]
+fn a_method_call_passes_the_receiver_first() {
+    let ir = function_ir(
+        "class Counter(var count: Int) {\n    fn add(n: Int) {\n        this.count = n\n    }\n}\n\
+         fn main() {\n    Counter(0).add(7)\n}\n",
+        "main",
+    );
+    // The allocation is the receiver, so it is the first argument and the
+    // written argument follows it.
+    assert!(ir.contains("call fn0 %0 7:i64"), "{ir}");
+}
+
+#[test]
+fn this_reads_the_receiver_parameter() {
+    let ir = function_ir(
+        "class Rect(val side: Int) {\n    fn area(): Int = this.side * this.side\n}\n",
+        "Rect.area",
+    );
+    assert!(ir.contains("load $0"), "the receiver is slot zero: {ir}");
+    assert!(ir.contains("load [%"), "and its field is read through it: {ir}");
+}

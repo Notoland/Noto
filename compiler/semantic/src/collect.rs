@@ -5,7 +5,7 @@
 
 use crate::analysis::{
     ClassId, ClassInfo, ConstId, ConstInfo, ConstValue, FieldInfo, FunctionId, FunctionInfo,
-    Resolution,
+    MethodInfo, Resolution,
 };
 use crate::Checker;
 use noto_ast::{ClassKind, FnItem, Item, ItemKind, Module, TypeDeclItem, TypeExpr, TypeExprKind};
@@ -87,10 +87,6 @@ impl Checker<'_> {
             self.sink.emit(unsupported("properties", property.span));
             return;
         }
-        if let Some(method) = decl.methods.first() {
-            self.sink.emit(unsupported("methods", method.span));
-            return;
-        }
         if let Some(field) = decl.fields.first() {
             self.sink.emit(
                 unsupported("fields declared in the class body", field.span).with_help(
@@ -120,6 +116,7 @@ impl Checker<'_> {
         self.classes.push(ClassInfo {
             name: name.clone(),
             fields: Vec::new(),
+            methods: Vec::new(),
             ty,
             def,
             span: item.span,
@@ -188,6 +185,107 @@ impl Checker<'_> {
         }
 
         self.classes[id.0 as usize].fields = fields;
+
+        for item in &decl.methods {
+            let ItemKind::Fn(function) = &item.kind else { continue };
+            self.collect_method(id, item, function);
+        }
+    }
+
+    /// Records a method's signature as a function taking the receiver first.
+    ///
+    /// A method is an ordinary function with one extra parameter, so calls,
+    /// bodies, lowering and the calling convention all work on it unchanged.
+    /// The name is mangled with the class — an identifier cannot contain a
+    /// `.`, so `Point.distance` cannot collide with a free function, and it
+    /// is what a diagnostic wants to print anyway.
+    fn collect_method(&mut self, class: ClassId, item: &Item, function: &FnItem) {
+        if function.receiver.is_some() {
+            self.sink.emit(
+                Diagnostic::error(
+                    codes::UNSUPPORTED_CONSTRUCT,
+                    "a method already has a receiver",
+                )
+                .with_primary(item.span, "remove the explicit receiver"),
+            );
+            return;
+        }
+        if !function.type_params.is_empty() {
+            self.sink.emit(
+                Diagnostic::error(
+                    codes::UNSUPPORTED_CONSTRUCT,
+                    "generic methods are not supported by this compiler yet",
+                )
+                .with_primary(function.type_params[0].span, "not implemented in Noto 0.3"),
+            );
+            return;
+        }
+
+        let class_name = self.classes[class.0 as usize].name.clone();
+        let receiver_ty = self.classes[class.0 as usize].ty;
+        let short = function.name.name.clone();
+
+        if self.classes[class.0 as usize].method(&short).is_some() {
+            self.sink.emit(
+                Diagnostic::error(
+                    codes::DUPLICATE_NAME,
+                    format!("`{class_name}.{short}` is declared more than once"),
+                )
+                .with_primary(function.name.span, "redeclared here"),
+            );
+            return;
+        }
+        if let Some((_, field)) = self.classes[class.0 as usize].field(&short) {
+            let declared_at = field.span;
+            self.sink.emit(
+                Diagnostic::error(
+                    codes::DUPLICATE_NAME,
+                    format!("`{class_name}` already has a field named `{short}`"),
+                )
+                .with_primary(function.name.span, "a method cannot share its name")
+                .with_secondary(declared_at, "the field is declared here"),
+            );
+            return;
+        }
+
+        let id = FunctionId(self.functions.len() as u32);
+        let result = match &function.result {
+            Some(ty) => self.resolve_type(ty),
+            None => self.store.unit(),
+        };
+
+        self.functions.push(FunctionInfo {
+            name: format!("{class_name}.{short}"),
+            parameters: Vec::new(),
+            result,
+            locals: Vec::new(),
+            body: function.body.as_ref().map(|body| body.id),
+            is_async: function.is_async,
+            span: item.span,
+        });
+
+        let previous_function = self.current_function.replace(id);
+        self.scopes.push();
+        let receiver = self.declare_local(
+            crate::RECEIVER_NAME,
+            receiver_ty,
+            false,
+            true,
+            function.name.span,
+        );
+        self.functions[id.0 as usize].parameters.push(receiver);
+        for param in &function.params {
+            let ty = match &param.ty {
+                Some(ty) => self.resolve_type(ty),
+                None => self.store.error(),
+            };
+            let local = self.declare_local(&param.name.name, ty, false, true, param.span);
+            self.functions[id.0 as usize].parameters.push(local);
+        }
+        self.scopes.pop();
+        self.current_function = previous_function;
+
+        self.classes[class.0 as usize].methods.push(MethodInfo { name: short, function: id });
     }
 
     fn report_unsupported(&mut self, item: &Item) {

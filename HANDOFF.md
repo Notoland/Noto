@@ -5,7 +5,7 @@ human or agent. Read this before touching anything.
 
 **Where the project stands:** the compiler is real and works end to end. A
 `.noto` file becomes a static native ELF executable with no LLVM, no libc, and
-no external toolchain. 373 tests pass, 0 fail, no warnings. The whole tool
+no external toolchain. 392 tests pass, 0 fail, no warnings. The whole tool
 set — `run`, `build`, `check`, `test`, `lint`, `fmt` — is implemented, and
 `class` gives the language its first object type.
 
@@ -108,9 +108,10 @@ fn main() {
 - `println`/`print` overloaded on String/Int/Bool, `assert`
 - `test "name" { ... }` declarations are collected, type checked and run by
   `noto test`
-- `class Point(val x: Int, var y: Int)`: a constructor, field reads, field
-  writes. An object is a reference; every field takes a machine word and
-  lives at `index * 8`
+- `class Point(val x: Int, var y: Int) { fn ... }`: a constructor, field
+  reads, field writes, methods and `this`. An object is a reference; every
+  field takes a machine word and lives at `index * 8`; a method is a function
+  named `Class.method` taking the receiver first
 
 ## 4. What does NOT work — and how it fails
 
@@ -121,7 +122,7 @@ in Noto 0.1`. Nothing is silently accepted and miscompiled.
 | Construct | Rejected in | Notes |
 |---|---|---|
 | `struct` / `data class` / `data struct` | `compiler/semantic/src/collect.rs` `declare_class` | value semantics need RFC 0001; `class` works |
-| class methods, properties, body fields, field defaults, inheritance | `collect.rs` `declare_class` | the constructor's parameter list is the whole class today |
+| class properties, body fields, field defaults, inheritance | `collect.rs` `declare_class` | methods work; the rest waits |
 | `interface`, `enum` | same | enums need tagged-union layout |
 | generics (`fn f<T>`, `List<T>`) | `collect.rs` `collect_fn`, `resolve_type` | monomorphisation not designed yet |
 | extension functions | `collect.rs` `collect_fn` | receiver resolution missing |
@@ -224,10 +225,9 @@ handful of intrinsics.
 
 ### 5.5 Language work, roughly in dependency order
 
-1. **object model** — ~~layout, construction and field access~~ done for
-   `class`. What remains: **methods** (a receiver parameter and a call form),
-   properties, fields declared in the body, field defaults, then inheritance
-   and interfaces. `struct` and the `data` flavours wait on RFC 0001, since
+1. **object model** — ~~layout, construction, field access and methods~~ done
+   for `class`. What remains: properties with `get`/`set`, fields declared in
+   the body, field defaults, method values, then inheritance and interfaces. `struct` and the `data` flavours wait on RFC 0001, since
    they promise value semantics and an object is a reference today. A `data
    class` also needs structural equality and a `toString` — an object cannot
    be printed at all right now.
@@ -283,7 +283,7 @@ RFC.
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
-cargo test --workspace          # 373 tests, must stay at 0 failures
+cargo test --workspace          # 392 tests, must stay at 0 failures
 cargo build --workspace
 cargo run -q -p noto-driver --example emit -- examples/hello.noto /tmp/hello && /tmp/hello
 ```

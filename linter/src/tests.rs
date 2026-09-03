@@ -153,6 +153,46 @@ fn a_function_called_only_from_a_test_is_used() {
 }
 
 #[test]
+fn a_method_that_is_never_called_is_reported_as_a_method() {
+    let lints = lints(
+        "class Rect(val side: Int) {\n    fn area(): Int = this.side\n}\n         fn main() {\n    println(Rect(1).side)\n}\n",
+    );
+    assert_eq!(lints.len(), 1);
+    assert_eq!(lints[0].code, codes::UNUSED_FUNCTION);
+    assert!(lints[0].message.contains("method `Rect.area`"), "{}", lints[0].message);
+    assert!(
+        lints[0].helps.iter().any(|help| help.contains("`_area`")),
+        "the rename is about the name the author wrote: {:?}",
+        lints[0].helps
+    );
+}
+
+#[test]
+fn a_method_that_is_called_is_not_reported() {
+    assert!(codes_of(
+        "class Rect(val side: Int) {\n    fn area(): Int = this.side\n}\n         fn main() {\n    println(Rect(1).area())\n}\n"
+    )
+    .is_empty());
+}
+
+#[test]
+fn an_underscore_opts_a_method_out() {
+    assert!(codes_of(
+        "class Rect(val side: Int) {\n    fn _area(): Int = this.side\n}\n         fn main() {\n    println(Rect(1).side)\n}\n"
+    )
+    .is_empty());
+}
+
+#[test]
+fn the_receiver_is_never_reported_as_unused() {
+    // Nobody wrote `this`, so there is nobody to tell that it is unused.
+    assert!(codes_of(
+        "class Rect(val side: Int) {\n    fn constant(): Int = 1\n}\n         fn main() {\n    println(Rect(1).constant())\n}\n"
+    )
+    .is_empty());
+}
+
+#[test]
 fn a_constant_that_is_never_read_is_reported() {
     let lints = lints("const LIMIT: Int = 10\nfn main() {\n    println(1)\n}\n");
     assert_eq!(lints.len(), 1);

@@ -33,6 +33,8 @@ pub enum Resolution {
     Const(ConstId),
     /// A declared class, named either as a type or as its constructor.
     Class(ClassId),
+    /// A method called through a receiver.
+    Method(FunctionId),
     /// A field read or written through a receiver.
     Field {
         /// The class the field belongs to.
@@ -123,6 +125,15 @@ pub struct FieldInfo {
     pub span: Span,
 }
 
+/// One method of a class.
+#[derive(Clone, Debug)]
+pub struct MethodInfo {
+    /// The name as written, without the class prefix.
+    pub name: String,
+    /// The function it was checked and lowered as.
+    pub function: FunctionId,
+}
+
 /// A checked class declaration.
 #[derive(Clone, Debug)]
 pub struct ClassInfo {
@@ -130,6 +141,8 @@ pub struct ClassInfo {
     pub name: String,
     /// Its fields, in declaration order. The order is the object's layout.
     pub fields: Vec<FieldInfo>,
+    /// Its methods, in declaration order.
+    pub methods: Vec<MethodInfo>,
     /// The type that names it.
     pub ty: TypeId,
     /// The declaration id carried by that type.
@@ -145,6 +158,11 @@ impl ClassInfo {
             .iter()
             .position(|field| field.name == name)
             .map(|index| (index as u32, &self.fields[index]))
+    }
+
+    /// Looks a method up by name.
+    pub fn method(&self, name: &str) -> Option<&MethodInfo> {
+        self.methods.iter().find(|method| method.name == name)
     }
 }
 

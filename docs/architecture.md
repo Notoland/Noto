@@ -122,6 +122,11 @@ Lives in its own crate (added beyond the original layout) because lowering
 needs both the AST and the type checker's results; putting it in `noto-ir`
 would force the IR to depend on the whole front end.
 
+A method is lowered as a function whose first parameter is the receiver, and
+a method call as an ordinary call with the receiver passed first. Nothing
+below this crate knows what a method is: the IR sees a function named
+`Class.method` taking one more argument than the author wrote.
+
 Object layout lives here, and only here. A class's fields are an ordered
 list in the analysis; lowering turns field *n* into byte offset *n × 8* and
 emits `alloc`, `load` and `store`. Neither the IR nor the backend knows what

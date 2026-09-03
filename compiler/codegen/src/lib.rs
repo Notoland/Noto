@@ -65,13 +65,22 @@ impl CodegenError {
                     .collect::<Vec<_>>()
                     .join(", ")
             )),
-            CodegenError::TooManyParameters { function, limit, span } => Diagnostic::error(
-                codes::UNSUPPORTED_CONSTRUCT,
-                format!("`{function}` takes more than {limit} parameters"),
-            )
-            .with_primary(*span, "too many parameters")
-            .with_note("passing arguments on the stack is not implemented in Noto 0.3")
-            .with_help("group the extra parameters into a single value"),
+            CodegenError::TooManyParameters { function, limit, span } => {
+                let mut diagnostic = Diagnostic::error(
+                    codes::UNSUPPORTED_CONSTRUCT,
+                    format!("`{function}` takes more than {limit} parameters"),
+                )
+                .with_primary(*span, "too many parameters")
+                .with_note("passing arguments on the stack is not implemented in Noto 0.3")
+                .with_help("group the extra parameters into a single value");
+                // A method's receiver is passed like any other argument, so it
+                // spends one of the registers the author did not write.
+                if function.contains('.') {
+                    diagnostic = diagnostic
+                        .with_note("a method's receiver counts as one of them");
+                }
+                diagnostic
+            }
             CodegenError::TooManyArguments { function, limit, span } => Diagnostic::error(
                 codes::UNSUPPORTED_CONSTRUCT,
                 format!("a call in `{function}` passes more than {limit} arguments"),

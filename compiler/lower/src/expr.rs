@@ -11,7 +11,8 @@ impl Builder<'_> {
     pub(crate) fn lower_expr(&mut self, expr: &Expr) -> Operand {
         match &expr.kind {
             ExprKind::Literal(literal) => self.lower_literal(literal, expr),
-            ExprKind::Path(_) => self.lower_path(expr),
+            // `this` is the receiver parameter, bound as an ordinary local.
+            ExprKind::Path(_) | ExprKind::This => self.lower_path(expr),
             ExprKind::Unary { op, operand } => self.lower_unary(*op, operand, expr),
             ExprKind::Binary { op, left, right, .. } => self.lower_binary(*op, left, right, expr),
             ExprKind::Assign { target, value, op, .. } => {
@@ -602,6 +603,11 @@ impl Builder<'_> {
             return self.lower_construction(class, call, expr);
         }
 
+        // A method call is an ordinary call with the receiver passed first.
+        if let Some(Resolution::Method(method)) = self.analysis.resolution(call.callee.id) {
+            return self.lower_method_call(method, call, expr);
+        }
+
         let Some(Resolution::Function(function)) = self.analysis.resolution(call.callee.id) else {
             return self.unsupported(expr.span, "calling this value");
         };
@@ -721,6 +727,41 @@ impl Builder<'_> {
 
         self.push(InstKind::Store { address: object, offset, value: stored }, span);
         Operand::Const(Const::Unit)
+    }
+
+    /// Lowers `p.distance(q)` to `Point.distance(p, q)`.
+    ///
+    /// A method is a function whose first parameter is the receiver, so the
+    /// only work here is evaluating the receiver before the arguments — the
+    /// order they are written — and putting it first.
+    fn lower_method_call(
+        &mut self,
+        method: noto_semantic::FunctionId,
+        call: &noto_ast::CallExpr,
+        expr: &Expr,
+    ) -> Operand {
+        let ExprKind::Member { receiver, .. } = &call.callee.kind else {
+            return self.unsupported(expr.span, "calling this value");
+        };
+        let Some(callee) = self.func_id_of(method) else {
+            return self.unsupported(expr.span, "calling this method");
+        };
+
+        let mut arguments = vec![self.lower_expr(receiver)];
+        arguments
+            .extend(call.arguments.iter().map(|argument| self.lower_expr(&argument.value)));
+
+        let result = self.program.function(callee).result;
+        if result.is_unit() {
+            self.push(InstKind::Call { dest: None, callee, arguments }, expr.span);
+            Operand::Const(Const::Unit)
+        } else {
+            self.emit_value(result, expr.span, |dest| InstKind::Call {
+                dest: Some(dest),
+                callee,
+                arguments,
+            })
+        }
     }
 
     /// Lowers `Point(1, 2)` to an allocation followed by one store per field.
