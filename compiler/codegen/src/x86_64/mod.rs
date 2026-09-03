@@ -266,6 +266,28 @@ impl<'a> FunctionGenerator<'a> {
                     self.assembler.mov_mem_reg(Reg::Rbp, offset, Reg::Rax);
                 }
             }
+            InstKind::Alloc { dest, size } => {
+                // The bump allocator takes the size in the first ABI register
+                // and returns the pointer in Rax, like any other routine.
+                self.assembler.mov_reg_imm64(Reg::Rdi, *size as i64);
+                let label = self.runtime_labels.get(Routine::Alloc);
+                self.assembler.call(label);
+                let offset = self.value_offset(*dest);
+                self.assembler.mov_mem_reg(Reg::Rbp, offset, Reg::Rax);
+            }
+            InstKind::Load { dest, address, offset } => {
+                self.load_operand(LEFT, address);
+                self.assembler.mov_reg_mem(LEFT, LEFT, *offset as i32);
+                let ty = self.function.value_type(*dest);
+                self.normalise(LEFT, ty);
+                let destination = self.value_offset(*dest);
+                self.assembler.mov_mem_reg(Reg::Rbp, destination, LEFT);
+            }
+            InstKind::Store { address, offset, value } => {
+                self.load_operand(LEFT, address);
+                self.load_operand(RIGHT, value);
+                self.assembler.mov_mem_reg(LEFT, *offset as i32, RIGHT);
+            }
             InstKind::Intrinsic { dest, which, arguments } => {
                 self.emit_call_arguments(arguments)?;
                 let label = self.runtime_labels.get(routine_for(*which));

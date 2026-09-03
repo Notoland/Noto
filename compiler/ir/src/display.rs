@@ -97,6 +97,16 @@ fn render_inst(inst: &Inst) -> String {
                 let _ = write!(out, " {argument}");
             }
         }
+        InstKind::Alloc { dest, size } => {
+            let _ = write!(out, "%{} = alloc {size}", dest.0);
+        }
+        InstKind::Load { dest, address, offset } => {
+            // The brackets are what tell a memory load from a slot load.
+            let _ = write!(out, "%{} = load [{address}+{offset}]", dest.0);
+        }
+        InstKind::Store { address, offset, value } => {
+            let _ = write!(out, "store [{address}+{offset}] {value}");
+        }
         InstKind::Intrinsic { dest, which, arguments } => {
             if let Some(dest) = dest {
                 let _ = write!(out, "%{} = ", dest.0);
@@ -161,8 +171,40 @@ impl Display for Const {
 
 #[cfg(test)]
 mod tests {
+    use super::render_inst;
     use crate::*;
     use noto_span::Span;
+
+    #[test]
+    fn tells_a_memory_access_from_a_slot_access() {
+        let load_slot =
+            Inst::new(InstKind::LoadLocal { dest: ValueId(1), slot: SlotId(0) }, Span::dummy());
+        let load_memory = Inst::new(
+            InstKind::Load {
+                dest: ValueId(2),
+                address: Operand::Value(ValueId(1)),
+                offset: 8,
+            },
+            Span::dummy(),
+        );
+        assert_eq!(render_inst(&load_slot), "%1 = load $0");
+        assert_eq!(render_inst(&load_memory), "%2 = load [%1+8]");
+    }
+
+    #[test]
+    fn prints_the_memory_instructions() {
+        let alloc = Inst::new(InstKind::Alloc { dest: ValueId(0), size: 16 }, Span::dummy());
+        let store = Inst::new(
+            InstKind::Store {
+                address: Operand::Value(ValueId(0)),
+                offset: 8,
+                value: Operand::Const(Const::Int { value: 4, ty: IrType::I64 }),
+            },
+            Span::dummy(),
+        );
+        assert_eq!(render_inst(&alloc), "%0 = alloc 16");
+        assert_eq!(render_inst(&store), "store [%0+8] 4:i64");
+    }
 
     #[test]
     fn prints_a_function_in_the_textual_form() {

@@ -292,6 +292,10 @@ impl Builder<'_> {
         op: Option<BinaryOp>,
         span: Span,
     ) -> Operand {
+        if let Some(Resolution::Field { class, index }) = self.analysis.resolution(target.id) {
+            return self.lower_field_assign(class, index, target, value, op, span);
+        }
+
         let Some(Resolution::Local(local)) = self.analysis.resolution(target.id) else {
             return self.unsupported(target.span, "assigning to this target");
         };
@@ -593,6 +597,11 @@ impl Builder<'_> {
             return self.lower_builtin_call(builtin, call, expr);
         }
 
+        // A class name applied to arguments constructs an object.
+        if let Some(Resolution::Class(class)) = self.analysis.resolution(call.callee.id) {
+            return self.lower_construction(class, call, expr);
+        }
+
         let Some(Resolution::Function(function)) = self.analysis.resolution(call.callee.id) else {
             return self.unsupported(expr.span, "calling this value");
         };
@@ -654,7 +663,110 @@ impl Builder<'_> {
         }
     }
 
+    /// Lowers `p.x = v` and `p.x += v`.
+    ///
+    /// The receiver is evaluated once. That matters for a compound
+    /// assignment, where the object is both read from and written to: were it
+    /// lowered twice, `next().count += 1` would allocate one object, read it,
+    /// and store into a second.
+    fn lower_field_assign(
+        &mut self,
+        class: noto_semantic::ClassId,
+        index: u32,
+        target: &Expr,
+        value: &Expr,
+        op: Option<BinaryOp>,
+        span: Span,
+    ) -> Operand {
+        let ExprKind::Member { receiver, .. } = &target.kind else {
+            return self.unsupported(target.span, "assigning to this target");
+        };
+
+        let ty = crate::lower_type(
+            &self.analysis.store,
+            self.analysis.class(class).fields[index as usize].ty,
+        );
+        let offset = crate::field_offset(index);
+        let object = self.lower_expr(receiver);
+
+        let stored = match op {
+            None => self.lower_expr(value),
+            Some(op) => {
+                let current = self.emit_value(ty, span, |dest| InstKind::Load {
+                    dest,
+                    address: object.clone(),
+                    offset,
+                });
+                let right = self.lower_expr(value);
+
+                if op == BinaryOp::Add && ty == IrType::Str {
+                    self.emit_value(IrType::Str, span, |dest| InstKind::Intrinsic {
+                        dest: Some(dest),
+                        which: Intrinsic::StringConcat,
+                        arguments: vec![current, right],
+                    })
+                } else {
+                    let Some(ir_op) = binary_op(op, ty) else {
+                        return self.unsupported(span, "this compound assignment");
+                    };
+                    self.emit_value(ty, span, |dest| InstKind::Binary {
+                        dest,
+                        op: ir_op,
+                        left: current,
+                        right,
+                    })
+                }
+            }
+        };
+
+        self.push(InstKind::Store { address: object, offset, value: stored }, span);
+        Operand::Const(Const::Unit)
+    }
+
+    /// Lowers `Point(1, 2)` to an allocation followed by one store per field.
+    ///
+    /// The arguments are evaluated before the allocation so that their order
+    /// of evaluation is the order they were written, whatever they call.
+    fn lower_construction(
+        &mut self,
+        class: noto_semantic::ClassId,
+        call: &noto_ast::CallExpr,
+        expr: &Expr,
+    ) -> Operand {
+        let values: Vec<Operand> =
+            call.arguments.iter().map(|argument| self.lower_expr(&argument.value)).collect();
+
+        let size = crate::object_size(self.analysis.class(class).fields.len());
+        let object = self.emit_value(IrType::Ptr, expr.span, |dest| InstKind::Alloc { dest, size });
+
+        for (index, value) in values.into_iter().enumerate() {
+            self.push(
+                InstKind::Store {
+                    address: object.clone(),
+                    offset: crate::field_offset(index as u32),
+                    value,
+                },
+                expr.span,
+            );
+        }
+
+        object
+    }
+
     fn lower_member(&mut self, receiver: &Expr, _name: &noto_ast::Ident, expr: &Expr) -> Operand {
+        if let Some(Resolution::Field { class, index }) = self.analysis.resolution(expr.id) {
+            let ty = crate::lower_type(
+                &self.analysis.store,
+                self.analysis.class(class).fields[index as usize].ty,
+            );
+            let object = self.lower_expr(receiver);
+            return self.emit_value(ty, expr.span, |dest| InstKind::Load {
+                dest,
+                address: object,
+                offset: crate::field_offset(index),
+            });
+        }
+
         let Some(Resolution::Builtin(builtin)) = self.analysis.resolution(expr.id) else {
             return self.unsupported(expr.span, "reading this member");
         };

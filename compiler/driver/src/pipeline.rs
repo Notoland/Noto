@@ -221,6 +221,19 @@ mod tests {
     }
 
     #[test]
+    fn a_program_with_objects_reaches_the_backend() {
+        let mut sink = DiagnosticSink::new();
+        let (_, compilation) = compile_source(
+            "point.noto",
+            "class Point(val x: Int, var y: Int)\n             fn main() {\n    val p = Point(1, 2)\n    p.y = 3\n    println(p.x + p.y)\n}\n",
+            &CompileOptions::default(),
+            &mut sink,
+        );
+        assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+        assert!(compilation.is_complete());
+    }
+
+    #[test]
     fn a_complete_build_produces_an_executable() {
         let mut sink = DiagnosticSink::new();
         let (_, compilation) = compile_source(

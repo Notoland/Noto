@@ -467,7 +467,8 @@ fn warns_about_code_after_a_return() {
 #[test]
 fn reports_constructs_the_compiler_cannot_lower_yet() {
     for (source, needle) in [
-        ("class User(val name: String)\nfn main() {}\n", "not supported by this compiler yet"),
+        ("struct Point(val x: Int)\nfn main() {}\n", "not supported by this compiler yet"),
+        ("data class User(val name: String)\nfn main() {}\n", "not supported by this compiler yet"),
         ("interface Shape { fn area(): Int }\nfn main() {}\n", "not supported by this compiler yet"),
         ("enum Color { Red }\nfn main() {}\n", "not supported by this compiler yet"),
         ("fn f<T>(x: T) {}\nfn main() {}\n", "generic functions are not supported"),
@@ -478,9 +479,121 @@ fn reports_constructs_the_compiler_cannot_lower_yet() {
 
 #[test]
 fn an_unsupported_construct_still_produces_an_analysis() {
-    let (analysis, messages) = check("class User(val name: String)\nfn main() {}\n");
+    let (analysis, messages) = check("interface Shape { fn area(): Int }\nfn main() {}\n");
     assert!(!messages.is_empty());
     assert!(analysis.entry.is_some(), "`main` is still analysed");
+}
+
+// --- classes ---------------------------------------------------------------
+
+#[test]
+fn a_class_declares_a_type_and_a_constructor() {
+    let analysis = check_ok(
+        "class Point(val x: Int, val y: Int)\n         fn main() {\n    val p = Point(1, 2)\n    println(p.x)\n}\n",
+    );
+    assert_eq!(analysis.classes.len(), 1);
+    assert_eq!(analysis.classes[0].name, "Point");
+    assert_eq!(analysis.classes[0].fields.len(), 2);
+}
+
+#[test]
+fn a_class_name_is_usable_as_a_type() {
+    check_ok(
+        "class Point(val x: Int)\n         fn origin(): Point = Point(0)\n         fn main() {\n    println(origin().x)\n}\n",
+    );
+}
+
+#[test]
+fn a_class_may_be_named_before_it_is_declared() {
+    check_ok(
+        "fn first(p: Pair): Int = p.left\n         class Pair(val left: Int, val right: Int)\n         fn main() {\n    println(first(Pair(1, 2)))\n}\n",
+    );
+}
+
+#[test]
+fn a_field_may_hold_another_class() {
+    check_ok(
+        "class Inner(val n: Int)\n         class Outer(val inner: Inner)\n         fn main() {\n    println(Outer(Inner(1)).inner.n)\n}\n",
+    );
+}
+
+#[test]
+fn a_constructor_checks_its_argument_count() {
+    check_error(
+        "class Point(val x: Int, val y: Int)\nfn main() { val p = Point(1) }\n",
+        "`Point` takes 2 arguments",
+    );
+}
+
+#[test]
+fn a_constructor_names_the_field_a_bad_argument_was_meant_for() {
+    check_error(
+        "class Point(val x: Int, val y: Int)\nfn main() { val p = Point(1, \"two\") }\n",
+        "`Point.y` is a `Int`",
+    );
+}
+
+#[test]
+fn an_unknown_field_is_reported_with_the_ones_that_exist() {
+    check_error(
+        "class Point(val x: Int)\nfn main() { println(Point(1).z) }\n",
+        "`Point` has no field `z`",
+    );
+}
+
+#[test]
+fn a_val_field_cannot_be_assigned() {
+    check_error(
+        "class Point(val x: Int)\nfn main() {\n    val p = Point(1)\n    p.x = 2\n}\n",
+        "cannot assign to `Point.x`",
+    );
+}
+
+#[test]
+fn a_var_field_can_be_assigned() {
+    check_ok(
+        "class Counter(var count: Int)\n         fn main() {\n    val c = Counter(0)\n    c.count = 1\n    println(c.count)\n}\n",
+    );
+}
+
+#[test]
+fn a_field_assignment_is_type_checked() {
+    check_error(
+        "class Counter(var count: Int)\nfn main() {\n    val c = Counter(0)\n    c.count = \"one\"\n}\n",
+        "expected `Int`",
+    );
+}
+
+#[test]
+fn a_class_declared_twice_is_reported() {
+    check_error(
+        "class Point(val x: Int)\nclass Point(val y: Int)\nfn main() {}\n",
+        "`Point` is declared more than once",
+    );
+}
+
+#[test]
+fn a_duplicate_field_is_reported() {
+    check_error(
+        "class Point(val x: Int, val x: Int)\nfn main() {}\n",
+        "`x` is declared more than once in `Point`",
+    );
+}
+
+#[test]
+fn a_field_without_a_type_is_reported() {
+    check_error("class Point(val x)\nfn main() {}\n", "needs a declared type");
+}
+
+#[test]
+fn a_class_type_takes_part_in_null_safety() {
+    check_ok(
+        "class Point(val x: Int)\n         fn main() {\n    val p: Point? = null\n    val q = p ?: Point(0)\n    println(q.x)\n}\n",
+    );
+    check_error(
+        "class Point(val x: Int)\nfn main() {\n    val p: Point? = null\n    println(p.x)\n}\n",
+        "cannot be read from a `Point?`",
+    );
 }
 
 // --- tests -----------------------------------------------------------------

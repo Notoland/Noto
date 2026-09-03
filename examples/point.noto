@@ -1,0 +1,50 @@
+// Objects in Noto 0.3. Run the tests with `noto test examples/point.noto`.
+
+class Point(val x: Int, val y: Int)
+
+class Counter(var count: Int)
+
+class Line(val from: Point, val to: Point)
+
+fn manhattan(line: Line): Int {
+    var distance = line.to.x - line.from.x
+    if distance < 0 { distance = -distance }
+    var vertical = line.to.y - line.from.y
+    if vertical < 0 { vertical = -vertical }
+    return distance + vertical
+}
+
+fn bump(counter: Counter) {
+    counter.count += 1
+}
+
+test "a field holds what the constructor was given" {
+    val p = Point(3, 4)
+    assert(p.x == 3)
+    assert(p.y == 4)
+}
+
+test "a var field can be reassigned through a receiver" {
+    val counter = Counter(0)
+    bump(counter)
+    bump(counter)
+    assert(counter.count == 2)
+}
+
+test "an object is a reference, so two names see one object" {
+    val counter = Counter(0)
+    val same = counter
+    bump(same)
+    assert(counter.count == 1)
+}
+
+test "a field can hold another object" {
+    val line = Line(Point(1, 1), Point(4, 5))
+    assert(line.from.x == 1)
+    assert(manhattan(line) == 7)
+}
+
+fn main() {
+    val line = Line(Point(0, 0), Point(3, 4))
+    println("distance = ${manhattan(line)}")
+}

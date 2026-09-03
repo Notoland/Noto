@@ -1,11 +1,13 @@
 # Noto — Handoff
 
-State of the project as of commit `5d83bd5`. Written for whoever picks the work
-up next, human or agent. Read this before touching anything.
+State of the project at 0.3. Written for whoever picks the work up next,
+human or agent. Read this before touching anything.
 
 **Where the project stands:** the compiler is real and works end to end. A
 `.noto` file becomes a static native ELF executable with no LLVM, no libc, and
-no external toolchain. 287 tests pass, 0 fail, no warnings.
+no external toolchain. 373 tests pass, 0 fail, no warnings. The whole tool
+set — `run`, `build`, `check`, `test`, `lint`, `fmt` — is implemented, and
+`class` gives the language its first object type.
 
 ```
 $ cargo run -q -p noto-driver --example emit -- examples/hello.noto /tmp/hello
@@ -61,8 +63,8 @@ noto/
 ├── lsp/              noto-lsp          STUB
 ├── debugger/         noto-debugger     STUB
 ├── std/              EMPTY
-├── docs/             EMPTY (rfcs/ and design/ directories exist, no files)
-├── examples/         hello.noto only
+├── docs/             architecture, spec, design notes, RFCs
+├── examples/         hello.noto, tests.noto, point.noto
 └── tests/            EMPTY
 ```
 
@@ -104,7 +106,11 @@ fn main() {
 - string interpolation, concatenation, `.length`, `.toString()`
 - `const` with compile-time folding
 - `println`/`print` overloaded on String/Int/Bool, `assert`
-- `test "name" { ... }` declarations are collected and type checked
+- `test "name" { ... }` declarations are collected, type checked and run by
+  `noto test`
+- `class Point(val x: Int, var y: Int)`: a constructor, field reads, field
+  writes. An object is a reference; every field takes a machine word and
+  lives at `index * 8`
 
 ## 4. What does NOT work — and how it fails
 
@@ -114,14 +120,15 @@ in Noto 0.1`. Nothing is silently accepted and miscompiled.
 
 | Construct | Rejected in | Notes |
 |---|---|---|
-| `class` / `struct` / `data class` | `compiler/semantic/src/collect.rs` `report_unsupported` | needs an object model + layout |
+| `struct` / `data class` / `data struct` | `compiler/semantic/src/collect.rs` `declare_class` | value semantics need RFC 0001; `class` works |
+| class methods, properties, body fields, field defaults, inheritance | `collect.rs` `declare_class` | the constructor's parameter list is the whole class today |
 | `interface`, `enum` | same | enums need tagged-union layout |
 | generics (`fn f<T>`, `List<T>`) | `collect.rs` `collect_fn`, `resolve_type` | monomorphisation not designed yet |
 | extension functions | `collect.rs` `collect_fn` | receiver resolution missing |
 | `import` / `export` | `collect.rs` | single-file compilation only |
 | floats | `compiler/lower/src/expr.rs` `lower_literal` | needs SSE registers in the backend |
 | `defer` | `compiler/lower/src/stmt.rs` `lower_stmt` | needs scope-exit tracking |
-| safe calls `?.f()`, `is`/`as`, `?` propagation, `await`, `unsafe`, lambdas as values, tuples, lists | `check.rs` / `expr.rs` fallthrough arms | |
+| safe field access `p?.x`, safe calls `?.f()`, `is`/`as`, `?` propagation, `await`, `unsafe`, lambdas as values, tuples, lists | `check.rs` / `expr.rs` fallthrough arms | |
 | named arguments | `check.rs` `check_call` | |
 | local `fn` inside a body | `check.rs` `check_stmt` | |
 | more than 6 parameters | `codegen/src/lib.rs` `CodegenError::TooManyParameters` | System V register limit; stack arguments not implemented |
@@ -217,8 +224,13 @@ handful of intrinsics.
 
 ### 5.5 Language work, roughly in dependency order
 
-1. **object model** — layout for `class`/`struct`/`data class`, then field
-   access, then methods. This unblocks most of the rejected constructs.
+1. **object model** — ~~layout, construction and field access~~ done for
+   `class`. What remains: **methods** (a receiver parameter and a call form),
+   properties, fields declared in the body, field defaults, then inheritance
+   and interfaces. `struct` and the `data` flavours wait on RFC 0001, since
+   they promise value semantics and an object is a reference today. A `data
+   class` also needs structural equality and a `toString` — an object cannot
+   be printed at all right now.
 2. **module system** — `import`/`export`, multi-file compilation. Unblocks the
    standard library.
 3. **enums with associated data** — tagged unions, then pattern matching on
@@ -258,6 +270,12 @@ RFC.
   instead of a cascade. There is a test for this.
 - **Uppercase names in `when` arms are enum cases, lowercase ones are new
   bindings.** Lets a pattern be read without knowing the scrutinee's type.
+- **An object is a reference, and `struct` is refused because of it.** `val b
+  = a` makes both names see one object. Accepting `struct` would mean giving
+  a keyword that promises value semantics the opposite behaviour.
+- **Object layout lives in `noto-lower` and nowhere else.** The IR has
+  `alloc`, `load [ptr+n]` and `store [ptr+n]` and no notion of a field, so a
+  different layout changes one crate.
 - **Noto emits the ELF file itself.** No system linker, no LLVM. Keep it that
   way — it is why `noto build` works on a machine with nothing installed.
 
@@ -265,7 +283,7 @@ RFC.
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
-cargo test --workspace          # 287 tests, must stay at 0 failures
+cargo test --workspace          # 373 tests, must stay at 0 failures
 cargo build --workspace
 cargo run -q -p noto-driver --example emit -- examples/hello.noto /tmp/hello && /tmp/hello
 ```

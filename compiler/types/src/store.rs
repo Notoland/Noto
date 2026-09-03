@@ -1,6 +1,6 @@
 //! Interning of types.
 
-use crate::{Primitive, Type};
+use crate::{DefId, Primitive, Type};
 use std::collections::HashMap;
 
 /// A handle to an interned [`Type`].
@@ -23,6 +23,12 @@ pub struct TypeStore {
     interned: HashMap<Type, TypeId>,
     /// The primitives, interned up front so that lookups are free.
     well_known: WellKnown,
+    /// The name of every declared type, indexed by [`DefId`].
+    ///
+    /// A [`Type::Named`] carries only its `DefId`; the rest of what a
+    /// declaration means belongs to semantic analysis. The name is the one
+    /// part the store needs, because it renders types into diagnostics.
+    definitions: Vec<String>,
 }
 
 /// Ids of the types the compiler refers to by name.
@@ -52,6 +58,7 @@ impl TypeStore {
         let mut store = TypeStore {
             types: Vec::new(),
             interned: HashMap::new(),
+            definitions: Vec::new(),
             // Filled in immediately below; the placeholder is never observed.
             well_known: WellKnown {
                 error: TypeId(0),
@@ -94,6 +101,17 @@ impl TypeStore {
         self.types.push(ty.clone());
         self.interned.insert(ty, id);
         id
+    }
+
+    /// Registers a declared type and returns the id that names it.
+    pub fn declare(&mut self, name: impl Into<String>) -> DefId {
+        self.definitions.push(name.into());
+        DefId(self.definitions.len() as u32 - 1)
+    }
+
+    /// The name a declaration was given, or `?` for one that never existed.
+    pub fn definition_name(&self, def: DefId) -> &str {
+        self.definitions.get(def.0 as usize).map(String::as_str).unwrap_or("?")
     }
 
     /// Looks up an interned type.
@@ -286,7 +304,7 @@ impl TypeStore {
             Type::Primitive(primitive) => primitive.name().to_string(),
             Type::String => "String".to_string(),
             Type::Named { def, arguments } => {
-                let name = format!("#{}", def.0);
+                let name = self.definition_name(*def).to_string();
                 if arguments.is_empty() {
                     name
                 } else {

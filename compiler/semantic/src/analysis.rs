@@ -3,7 +3,7 @@
 use crate::builtins::Builtin;
 use noto_ast::NodeId;
 use noto_span::Span;
-use noto_types::{TypeId, TypeStore};
+use noto_types::{DefId, TypeId, TypeStore};
 use std::collections::HashMap;
 
 /// Identifies a local binding within a compilation.
@@ -18,6 +18,10 @@ pub struct FunctionId(pub u32);
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct ConstId(pub u32);
 
+/// Identifies a declared class.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct ClassId(pub u32);
+
 /// What a name in the program refers to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Resolution {
@@ -27,6 +31,15 @@ pub enum Resolution {
     Function(FunctionId),
     /// A compile-time constant.
     Const(ConstId),
+    /// A declared class, named either as a type or as its constructor.
+    Class(ClassId),
+    /// A field read or written through a receiver.
+    Field {
+        /// The class the field belongs to.
+        class: ClassId,
+        /// Its position in the class's field list, which is also its slot.
+        index: u32,
+    },
     /// An operation provided by the compiler.
     Builtin(Builtin),
     /// A name that could not be resolved; already reported.
@@ -97,6 +110,44 @@ pub enum ConstValue {
     Error,
 }
 
+/// One field of a class.
+#[derive(Clone, Debug)]
+pub struct FieldInfo {
+    /// The name as written.
+    pub name: String,
+    /// Its declared type.
+    pub ty: TypeId,
+    /// Whether it may be reassigned, from `val` or `var`.
+    pub is_mutable: bool,
+    /// Where it was declared.
+    pub span: Span,
+}
+
+/// A checked class declaration.
+#[derive(Clone, Debug)]
+pub struct ClassInfo {
+    /// The name as written.
+    pub name: String,
+    /// Its fields, in declaration order. The order is the object's layout.
+    pub fields: Vec<FieldInfo>,
+    /// The type that names it.
+    pub ty: TypeId,
+    /// The declaration id carried by that type.
+    pub def: DefId,
+    /// Where it was declared.
+    pub span: Span,
+}
+
+impl ClassInfo {
+    /// Looks a field up by name, returning its index and what is known of it.
+    pub fn field(&self, name: &str) -> Option<(u32, &FieldInfo)> {
+        self.fields
+            .iter()
+            .position(|field| field.name == name)
+            .map(|index| (index as u32, &self.fields[index]))
+    }
+}
+
 /// A checked test declaration.
 #[derive(Clone, Debug)]
 pub struct TestInfo {
@@ -124,6 +175,8 @@ pub struct Analysis {
     pub functions: Vec<FunctionInfo>,
     /// Every constant, indexed by [`ConstId`].
     pub constants: Vec<ConstInfo>,
+    /// Every class, indexed by [`ClassId`].
+    pub classes: Vec<ClassInfo>,
     /// Every test.
     pub tests: Vec<TestInfo>,
     /// The program's entry point, if it declares one.
@@ -133,6 +186,25 @@ pub struct Analysis {
 }
 
 impl Analysis {
+    /// The class a type names, if it names one.
+    ///
+    /// A [`Type::Named`](noto_types::Type::Named) carries only a `DefId`;
+    /// this is how the rest of the compiler gets from a type back to the
+    /// declaration. The scan is linear because a program has few classes and
+    /// a second index would be one more thing to keep in step.
+    pub fn class_of(&self, ty: TypeId) -> Option<(ClassId, &ClassInfo)> {
+        let def = self.store.get(ty).as_def()?;
+        self.classes
+            .iter()
+            .position(|class| class.def == def)
+            .map(|index| (ClassId(index as u32), &self.classes[index]))
+    }
+
+    /// Looks a class up by id.
+    pub fn class(&self, id: ClassId) -> &ClassInfo {
+        &self.classes[id.0 as usize]
+    }
+
     /// The type recorded for a node, or the error type if there is none.
     pub fn type_of(&self, id: NodeId) -> TypeId {
         self.types.get(&id).copied().unwrap_or_else(|| self.store.error())

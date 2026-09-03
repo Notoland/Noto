@@ -122,6 +122,12 @@ Lives in its own crate (added beyond the original layout) because lowering
 needs both the AST and the type checker's results; putting it in `noto-ir`
 would force the IR to depend on the whole front end.
 
+Object layout lives here, and only here. A class's fields are an ordered
+list in the analysis; lowering turns field *n* into byte offset *n × 8* and
+emits `alloc`, `load` and `store`. Neither the IR nor the backend knows what
+a field is, so a future layout — packed fields, inline objects, tagged
+enums — changes this crate and nothing downstream of it.
+
 ### `noto-optimizer` — IR passes
 
 Passes over Noto IR. Currently small (constant folding and dead-code
@@ -136,7 +142,8 @@ exact instruction bytes.
 
 ### `noto-driver` — orchestration
 
-`read_source`, `compile`, `CompileOptions { stage, target, optimize }` and
+`read_source`, `compile`, `CompileOptions { stage, target, optimize,
+allow_no_main }` and
 `Stage::{Parse, Check, Ir, Executable}` — how far a compilation should go.
 `noto check` and `noto build` share exactly the same front end; they differ
 only in the stage they ask for.

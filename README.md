@@ -23,13 +23,13 @@ Hello, Noto!
 
 ## Status
 
-**Noto is in early development.** Version 0.1 is a working compiler for a real
+**Noto is in early development.** Version 0.3 is a working compiler for a real
 subset of the language, not a finished product. The pipeline runs end to end:
 source becomes a native Linux x86-64 executable that you can run.
 
 What that means in practice:
 
-- **287 tests pass, zero failures, zero warnings.**
+- **373 tests pass, zero failures, zero warnings.**
 - Constructs that are not implemented yet are **rejected with a clear error**,
   never silently accepted and miscompiled.
 - The parser covers the whole language; the back end does not yet.
@@ -68,6 +68,25 @@ fn main() {
 }
 ```
 
+Objects:
+
+```noto
+class Point(val x: Int, var y: Int)
+
+fn main() {
+    val p = Point(3, 4)
+    p.y = 10
+    println(p.x + p.y)
+}
+```
+
+An object is a **reference**: `val b = a` makes both names see one object.
+That is why `struct` and `data class` are still rejected — they promise value
+semantics, and giving them reference semantics under a keyword that says
+otherwise would be worse than refusing them until the memory model is
+settled. Fields are read with `.` and written with `.` when declared `var`;
+`class` methods, inheritance and generics are not implemented yet.
+
 ```
 Olá, João! Soma = 55
 Adolescente
@@ -75,7 +94,7 @@ true
 sem valor
 ```
 
-- the `noto` CLI: `run`, `build`, `check`, `version`
+- the `noto` CLI: `run`, `build`, `check`, `test`, `lint`, `fmt`, `version`
 - `val` and `var` with type inference
 - `Int`, `Int8`…`Int64`, `UInt`…`UInt64`, `Bool`, `Char`, `Byte`, `String`,
   `Unit`, `Nothing`, `Any`
@@ -85,7 +104,8 @@ sem valor
 - null safety: non-nullable by default, `T?`, `?:`
 - string interpolation and concatenation
 - `const` folded at compile time
-- `test "…" { … }` declarations
+- `test "…" { … }` declarations, run by `noto test`
+- `class` with fields: a constructor, field reads, field writes
 
 ## Design
 

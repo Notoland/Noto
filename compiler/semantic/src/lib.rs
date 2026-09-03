@@ -22,8 +22,8 @@ mod collect;
 mod scope;
 
 pub use analysis::{
-    Analysis, ConstId, ConstInfo, ConstValue, FunctionId, FunctionInfo, LocalId, LocalInfo,
-    Resolution, TestInfo,
+    Analysis, ClassId, ClassInfo, ConstId, ConstInfo, ConstValue, FieldInfo, FunctionId,
+    FunctionInfo, LocalId, LocalInfo, Resolution, TestInfo,
 };
 pub use builtins::Builtin;
 
@@ -55,6 +55,12 @@ struct Checker<'sink> {
     locals: Vec<LocalInfo>,
     functions: Vec<FunctionInfo>,
     constants: Vec<ConstInfo>,
+    classes: Vec<ClassInfo>,
+    /// Class names, so that a type expression can find a declaration.
+    ///
+    /// Types and values live in separate namespaces: `Point` as a type is
+    /// looked up here, `Point` as a constructor through the value scopes.
+    class_names: HashMap<String, ClassId>,
     tests: Vec<TestInfo>,
     entry: Option<FunctionId>,
     /// The function whose body is being checked.
@@ -76,6 +82,8 @@ impl<'sink> Checker<'sink> {
             locals: Vec::new(),
             functions: Vec::new(),
             constants: Vec::new(),
+            classes: Vec::new(),
+            class_names: HashMap::new(),
             tests: Vec::new(),
             entry: None,
             current_function: None,
@@ -90,10 +98,23 @@ impl<'sink> Checker<'sink> {
             locals: self.locals,
             functions: self.functions,
             constants: self.constants,
+            classes: self.classes,
             tests: self.tests,
             entry: self.entry,
             store: self.store,
         }
+    }
+
+    /// The class a type names, if it names one.
+    ///
+    /// The scan is linear because a program has few classes; the alternative
+    /// is a second index to keep in step with the first.
+    fn class_of(&self, ty: TypeId) -> Option<(ClassId, &ClassInfo)> {
+        let def = self.store.get(ty).as_def()?;
+        self.classes
+            .iter()
+            .position(|class| class.def == def)
+            .map(|index| (ClassId(index as u32), &self.classes[index]))
     }
 
     /// Records the type of an expression node.

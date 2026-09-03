@@ -3,9 +3,12 @@
 //! Every top-level signature is recorded before any body is checked, so
 //! declaration order inside a file never matters.
 
-use crate::analysis::{ConstId, ConstInfo, ConstValue, FunctionId, FunctionInfo, Resolution};
+use crate::analysis::{
+    ClassId, ClassInfo, ConstId, ConstInfo, ConstValue, FieldInfo, FunctionId, FunctionInfo,
+    Resolution,
+};
 use crate::Checker;
-use noto_ast::{FnItem, Item, ItemKind, Module, TypeExpr, TypeExprKind};
+use noto_ast::{ClassKind, FnItem, Item, ItemKind, Module, TypeDeclItem, TypeExpr, TypeExprKind};
 use noto_diagnostics::{codes, Diagnostic};
 use noto_span::Span;
 use noto_types::{Primitive, Type, TypeId};
@@ -15,17 +18,25 @@ impl Checker<'_> {
     pub(crate) fn collect_items(&mut self, module: &Module) {
         self.scopes.push();
 
+        // Class names are registered before anything else is collected, so a
+        // field, a parameter or a result type can name a class declared
+        // further down the file.
+        for item in &module.items {
+            if let ItemKind::TypeDecl(decl) = &item.kind {
+                self.declare_class(item, decl);
+            }
+        }
+
         for item in &module.items {
             match &item.kind {
                 ItemKind::Fn(function) => self.collect_fn(item, function),
                 ItemKind::Const(constant) => self.collect_const(item, constant),
                 ItemKind::Test(test) => self.collect_test(test),
-                // Types, interfaces, enums and imports parse today but are not
-                // yet given semantics; `noto check` reports them rather than
+                ItemKind::TypeDecl(decl) => self.collect_class_fields(decl),
+                // Interfaces, enums and imports parse today but are not yet
+                // given semantics; `noto check` reports them rather than
                 // silently accepting a program it cannot compile.
-                ItemKind::TypeDecl(_) | ItemKind::Interface(_) | ItemKind::Enum(_) => {
-                    self.report_unsupported(item);
-                }
+                ItemKind::Interface(_) | ItemKind::Enum(_) => self.report_unsupported(item),
                 ItemKind::Import(_) => self.report_unsupported(item),
                 ItemKind::Error => {}
             }
@@ -36,6 +47,149 @@ impl Checker<'_> {
         }
     }
 
+    /// Registers a class name, or reports why the declaration cannot be one.
+    ///
+    /// Only `class` is implemented. `struct` and the `data` flavours promise
+    /// value semantics — copied on assignment, compared by contents — and an
+    /// object here is a pointer into a heap that never frees. Accepting them
+    /// would mean giving them reference semantics under a keyword that says
+    /// otherwise, so they wait for the memory model in RFC 0001.
+    fn declare_class(&mut self, item: &Item, decl: &TypeDeclItem) {
+        let unsupported = |what: &str, span| {
+            Diagnostic::error(
+                codes::UNSUPPORTED_CONSTRUCT,
+                format!("{what} are not supported by this compiler yet"),
+            )
+            .with_primary(span, "not implemented in Noto 0.3")
+        };
+
+        if decl.class_kind != ClassKind::Class {
+            self.sink.emit(
+                Diagnostic::error(
+                    codes::UNSUPPORTED_CONSTRUCT,
+                    format!("`{}` declarations are not supported by this compiler yet", decl.class_kind.as_str()),
+                )
+                .with_primary(item.span, "not implemented in Noto 0.3")
+                .with_note("a value type is copied on assignment, which needs the memory model")
+                .with_help("declare it as a `class` for now: an object is a reference"),
+            );
+            return;
+        }
+        if let Some(param) = decl.type_params.first() {
+            self.sink.emit(unsupported("generic types", param.span));
+            return;
+        }
+        if let Some(base) = decl.base.as_ref().or(decl.interfaces.first()) {
+            self.sink.emit(unsupported("base classes and interfaces", base.span));
+            return;
+        }
+        if let Some(property) = decl.properties.first() {
+            self.sink.emit(unsupported("properties", property.span));
+            return;
+        }
+        if let Some(method) = decl.methods.first() {
+            self.sink.emit(unsupported("methods", method.span));
+            return;
+        }
+        if let Some(field) = decl.fields.first() {
+            self.sink.emit(
+                unsupported("fields declared in the class body", field.span).with_help(
+                    "declare them as constructor parameters: `class Point(val x: Int)`",
+                ),
+            );
+            return;
+        }
+
+        let name = decl.name.name.clone();
+        if let Some(existing) = self.class_names.get(&name).copied() {
+            let previous = self.classes[existing.0 as usize].span;
+            self.sink.emit(
+                Diagnostic::error(
+                    codes::DUPLICATE_NAME,
+                    format!("`{name}` is declared more than once"),
+                )
+                .with_primary(decl.name.span, "redeclared here")
+                .with_secondary(previous, "first declared here"),
+            );
+            return;
+        }
+
+        let id = ClassId(self.classes.len() as u32);
+        let def = self.store.declare(name.clone());
+        let ty = self.store.intern(Type::Named { def, arguments: Vec::new() });
+        self.classes.push(ClassInfo {
+            name: name.clone(),
+            fields: Vec::new(),
+            ty,
+            def,
+            span: item.span,
+        });
+        self.class_names.insert(name.clone(), id);
+        // The name is also a value: it is the constructor.
+        self.scopes.declare(name, Resolution::Class(id));
+    }
+
+    /// Resolves the field types of a class whose name is already registered.
+    fn collect_class_fields(&mut self, decl: &TypeDeclItem) {
+        let Some(id) = self.class_names.get(&decl.name.name).copied() else {
+            // `declare_class` reported why this declaration is not a class.
+            return;
+        };
+
+        let mut fields: Vec<FieldInfo> = Vec::new();
+        for param in &decl.primary_params {
+            if let Some(default) = &param.default {
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::UNSUPPORTED_CONSTRUCT,
+                        "default values for fields are not supported by this compiler yet",
+                    )
+                    .with_primary(default.span, "not implemented in Noto 0.3"),
+                );
+            }
+
+            let ty = match &param.ty {
+                Some(ty) => self.resolve_type(ty),
+                None => {
+                    // A field has no initialiser to infer from, so the type is
+                    // not optional the way a `val` in a body is.
+                    self.sink.emit(
+                        Diagnostic::error(
+                            codes::CANNOT_INFER,
+                            format!("field `{}` needs a declared type", param.name.name),
+                        )
+                        .with_primary(param.span, "no type to infer from here")
+                        .with_help(format!("write `{}: Int`, or whatever it holds", param.name.name)),
+                    );
+                    self.store.error()
+                }
+            };
+
+            let name = param.name.name.clone();
+            if let Some(previous) = fields.iter().find(|field| field.name == name) {
+                let previous = previous.span;
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::DUPLICATE_NAME,
+                        format!("`{name}` is declared more than once in `{}`", decl.name.name),
+                    )
+                    .with_primary(param.name.span, "redeclared here")
+                    .with_secondary(previous, "first declared here"),
+                );
+                continue;
+            }
+
+            fields.push(FieldInfo {
+                name,
+                ty,
+                is_mutable: param.kind == noto_ast::LetKind::Var,
+                span: param.span,
+            });
+        }
+
+        self.classes[id.0 as usize].fields = fields;
+    }
+
     fn report_unsupported(&mut self, item: &Item) {
         let name = item.describe();
         self.sink.emit(
@@ -43,7 +197,7 @@ impl Checker<'_> {
                 codes::UNSUPPORTED_CONSTRUCT,
                 format!("`{name}` declarations are not supported by this compiler yet"),
             )
-            .with_primary(item.span, "not implemented in Noto 0.1")
+            .with_primary(item.span, "not implemented in Noto 0.3")
             .with_note(
                 "the syntax is accepted so that tooling can read the whole language; \
                  code generation for it lands in a later release",
@@ -58,7 +212,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "extension functions are not supported by this compiler yet",
                 )
-                .with_primary(receiver.span, "not implemented in Noto 0.1"),
+                .with_primary(receiver.span, "not implemented in Noto 0.3"),
             );
             return;
         }
@@ -68,7 +222,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "generic functions are not supported by this compiler yet",
                 )
-                .with_primary(function.type_params[0].span, "not implemented in Noto 0.1"),
+                .with_primary(function.type_params[0].span, "not implemented in Noto 0.3"),
             );
             return;
         }
@@ -165,7 +319,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "`main` cannot be `async` in this compiler yet",
                 )
-                .with_primary(span, "not implemented in Noto 0.1"),
+                .with_primary(span, "not implemented in Noto 0.3"),
             );
         }
     }
@@ -380,7 +534,7 @@ impl Checker<'_> {
                             codes::UNSUPPORTED_CONSTRUCT,
                             "generic types are not supported by this compiler yet",
                         )
-                        .with_primary(ty.span, "not implemented in Noto 0.1"),
+                        .with_primary(ty.span, "not implemented in Noto 0.3"),
                     );
                     return self.store.error();
                 }
@@ -406,7 +560,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "list types are not supported by this compiler yet",
                     )
-                    .with_primary(ty.span, "not implemented in Noto 0.1"),
+                    .with_primary(ty.span, "not implemented in Noto 0.3"),
                 );
                 self.store.error()
             }
@@ -414,10 +568,13 @@ impl Checker<'_> {
         }
     }
 
-    /// Looks a type name up among the built-in types.
+    /// Looks a type name up among the built-in types and declared classes.
     fn resolve_type_name(&mut self, name: &str, span: Span) -> TypeId {
         if let Some(primitive) = Primitive::from_name(name) {
             return self.store.primitive(primitive);
+        }
+        if let Some(id) = self.class_names.get(name).copied() {
+            return self.classes[id.0 as usize].ty;
         }
         match name {
             "String" => self.store.string(),

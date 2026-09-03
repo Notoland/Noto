@@ -174,7 +174,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "declarations inside a function body are not supported yet",
                     )
-                    .with_primary(stmt.span, "not implemented in Noto 0.1")
+                    .with_primary(stmt.span, "not implemented in Noto 0.3")
                     .with_help("move the declaration to the top level of the file"),
                 );
                 self.store.unit()
@@ -258,7 +258,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this pattern is not supported in a binding yet",
                     )
-                    .with_primary(pattern.span, "not implemented in Noto 0.1")
+                    .with_primary(pattern.span, "not implemented in Noto 0.3")
                     .with_help("bind a name, a tuple of names, or `_`"),
                 );
             }
@@ -279,7 +279,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         format!("cannot iterate over a `{rendered}` yet"),
                     )
-                    .with_primary(iterable.span, "not iterable in Noto 0.1")
+                    .with_primary(iterable.span, "not iterable in Noto 0.3")
                     .with_help("iterate over a range, as in `for i in 0..10`"),
                 );
                 self.store.error()
@@ -349,7 +349,7 @@ impl Checker<'_> {
                     let ty = self.check_expr_expecting(bound, int);
                     self.expect_assignable(ty, int, bound.span, None);
                 }
-                // Ranges exist only inside `for` and `when` in Noto 0.1; there
+                // Ranges exist only inside `for` and `when` in Noto 0.3; there
                 // is no first-class `Range` type to give them yet.
                 self.store.unit()
             }
@@ -367,7 +367,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this expression is not supported by this compiler yet",
                     )
-                    .with_primary(expr.span, "not implemented in Noto 0.1"),
+                    .with_primary(expr.span, "not implemented in Noto 0.3"),
                 );
                 self.store.error()
             }
@@ -656,7 +656,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "`in` is not supported outside a `when` arm yet",
                     )
-                    .with_primary(span, "not implemented in Noto 0.1"),
+                    .with_primary(span, "not implemented in Noto 0.3"),
                 );
                 bool_ty
             }
@@ -779,6 +779,24 @@ impl Checker<'_> {
                         .with_help(format!("declare it with `var {name}` to allow reassignment"))
                 };
                 self.sink.emit(diagnostic);
+            }
+        } else if let Some(Resolution::Field { class, index }) =
+            self.resolutions.get(&target.id).copied()
+        {
+            let class = &self.classes[class.0 as usize];
+            let field = &class.fields[index as usize];
+            if !field.is_mutable {
+                let (class_name, name, declared_at) =
+                    (class.name.clone(), field.name.clone(), field.span);
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::REASSIGNED_VAL,
+                        format!("cannot assign to `{class_name}.{name}`"),
+                    )
+                    .with_primary(span, "assigned here")
+                    .with_secondary(declared_at, "declared with `val` here")
+                    .with_help(format!("declare it as `var {name}` to allow reassignment")),
+                );
             }
         } else if !matches!(self.resolutions.get(&target.id), Some(Resolution::Error)) {
             self.sink.emit(
@@ -997,7 +1015,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this pattern is not supported by this compiler yet",
                     )
-                    .with_primary(pattern.span, "not implemented in Noto 0.1"),
+                    .with_primary(pattern.span, "not implemented in Noto 0.3"),
                 );
             }
         }
@@ -1060,7 +1078,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "explicit type arguments are not supported by this compiler yet",
                 )
-                .with_primary(expr.span, "not implemented in Noto 0.1"),
+                .with_primary(expr.span, "not implemented in Noto 0.3"),
             );
         }
 
@@ -1071,7 +1089,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "named arguments are not supported by this compiler yet",
                     )
-                    .with_primary(name.span, "not implemented in Noto 0.1")
+                    .with_primary(name.span, "not implemented in Noto 0.3")
                     .with_help("pass the arguments positionally"),
                 );
             }
@@ -1089,6 +1107,13 @@ impl Checker<'_> {
             }
         }
 
+        // A call of a class name constructs one: `Point(1, 2)`.
+        if let ExprKind::Path(path) = &call.callee.kind {
+            if let Some(Resolution::Class(id)) = self.scopes.lookup(&path.to_dotted()) {
+                return self.check_construction(expr, call, id);
+            }
+        }
+
         // A method call on a builtin member: `value.toString()`.
         if let ExprKind::Member { receiver, name, safe } = &call.callee.kind {
             let receiver_ty = self.check_expr(receiver);
@@ -1098,7 +1123,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "safe calls are not supported by this compiler yet",
                     )
-                    .with_primary(expr.span, "not implemented in Noto 0.1"),
+                    .with_primary(expr.span, "not implemented in Noto 0.3"),
                 );
                 return self.store.error();
             }
@@ -1171,6 +1196,64 @@ impl Checker<'_> {
         }
 
         result
+    }
+
+    /// Lists a class's fields for a diagnostic note.
+    fn field_list(class: &crate::analysis::ClassInfo) -> String {
+        if class.fields.is_empty() {
+            return format!("`{}` has no fields", class.name);
+        }
+        let names: Vec<String> =
+            class.fields.iter().map(|field| format!("`{}`", field.name)).collect();
+        format!("`{}` has {}", class.name, names.join(", "))
+    }
+
+    /// Checks `Point(1, 2)`: a class name applied to one value per field.
+    ///
+    /// A class has exactly one constructor, its field list, so the check is
+    /// the same arity and assignability check a function call gets. The field
+    /// each argument initialises is named in the mismatch, because `expected
+    /// `Int`, found `String`` on its own does not say which of three `Int`
+    /// fields was meant.
+    fn check_construction(
+        &mut self,
+        expr: &Expr,
+        call: &noto_ast::CallExpr,
+        id: crate::analysis::ClassId,
+    ) -> TypeId {
+        self.record_resolution(call.callee.id, Resolution::Class(id));
+        self.record_resolution(expr.id, Resolution::Class(id));
+
+        let class = &self.classes[id.0 as usize];
+        let (name, ty) = (class.name.clone(), class.ty);
+        let fields: Vec<(String, TypeId, Span)> = class
+            .fields
+            .iter()
+            .map(|field| (field.name.clone(), field.ty, field.span))
+            .collect();
+
+        self.check_argument_count(expr.span, call.arguments.len(), fields.len(), &name);
+
+        for (argument, (field, expected, declared_at)) in call.arguments.iter().zip(&fields) {
+            let found = self.check_expr_expecting(&argument.value, *expected);
+            if !self.store.is_assignable(found, *expected) {
+                let (found, expected) = (self.store.render(found), self.store.render(*expected));
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::TYPE_MISMATCH,
+                        format!("`{name}.{field}` is a `{expected}`"),
+                    )
+                    .with_primary(argument.value.span, format!("this is a `{found}`"))
+                    .with_secondary(*declared_at, "declared here"),
+                );
+            }
+        }
+        for argument in call.arguments.iter().skip(fields.len()) {
+            self.check_expr(&argument.value);
+        }
+
+        self.record_type(call.callee.id, ty);
+        ty
     }
 
     fn check_argument_count(&mut self, span: Span, found: usize, expected: usize, name: &str) {
@@ -1273,6 +1356,36 @@ impl Checker<'_> {
                 .with_help(format!("use `?.{}` to get null instead when it is", name.name)),
             );
             return self.store.error();
+        }
+
+        if let Some((id, class)) = self.class_of(base) {
+            let Some((index, field)) = class.field(&name.name) else {
+                let (class_name, fields) = (class.name.clone(), Self::field_list(class));
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::UNKNOWN_MEMBER,
+                        format!("`{class_name}` has no field `{}`", name.name),
+                    )
+                    .with_primary(name.span, "no such field")
+                    .with_note(fields),
+                );
+                return self.store.error();
+            };
+            let ty = field.ty;
+
+            if safe {
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::UNSUPPORTED_CONSTRUCT,
+                        "safe field access is not supported by this compiler yet",
+                    )
+                    .with_primary(expr.span, "not implemented in Noto 0.3"),
+                );
+                return self.store.error();
+            }
+
+            self.record_resolution(expr.id, Resolution::Field { class: id, index });
+            return ty;
         }
 
         match builtins::member(&self.store, base, &name.name) {

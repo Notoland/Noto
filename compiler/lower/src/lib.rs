@@ -113,11 +113,34 @@ pub fn lower_type(store: &noto_types::TypeStore, ty: TypeId) -> IrType {
         Type::String => IrType::Str,
         Type::Nullable(inner) => lower_type(store, *inner),
         Type::Unit | Type::Nothing => IrType::Unit,
-        // A reference to an object of unknown shape is a pointer; the layout
-        // of user-declared types lands with the object model.
+        // An object is a reference: a `Point` value is the address of its
+        // fields, and assigning one copies the pointer.
         Type::Named { .. } | Type::Tuple(_) | Type::Function { .. } | Type::Any => IrType::Ptr,
         Type::Parameter { .. } | Type::Error => IrType::I64,
     }
+}
+
+/// How many bytes one field occupies in an object.
+///
+/// Every field gets a full machine word, whatever it holds. A `Bool` needs
+/// one byte and an `Int32` four, so this wastes space — but it makes a
+/// field's offset its index times eight, keeps every access naturally
+/// aligned, and lets a load and a store move a whole register. Packing
+/// smaller fields together is an optimisation, and one that needs the memory
+/// model settled before it changes what an object looks like.
+pub const FIELD_SIZE: u32 = 8;
+
+/// The size in bytes of an object with `fields` fields.
+///
+/// An object with no fields still gets a word, so that two of them have
+/// different addresses.
+pub fn object_size(fields: usize) -> u32 {
+    (fields as u32).max(1) * FIELD_SIZE
+}
+
+/// The byte offset of the field at `index`.
+pub fn field_offset(index: u32) -> u32 {
+    index * FIELD_SIZE
 }
 
 fn lower_primitive(primitive: Primitive) -> IrType {
@@ -322,7 +345,7 @@ impl<'a> Builder<'a> {
                 codes::UNSUPPORTED_CONSTRUCT,
                 format!("{what} cannot be compiled to native code yet"),
             )
-            .with_primary(span, "not implemented in Noto 0.1"),
+            .with_primary(span, "not implemented in Noto 0.3"),
         );
         Operand::Const(Const::Unit)
     }

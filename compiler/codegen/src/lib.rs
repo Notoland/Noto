@@ -70,14 +70,14 @@ impl CodegenError {
                 format!("`{function}` takes more than {limit} parameters"),
             )
             .with_primary(*span, "too many parameters")
-            .with_note("passing arguments on the stack is not implemented in Noto 0.1")
+            .with_note("passing arguments on the stack is not implemented in Noto 0.3")
             .with_help("group the extra parameters into a single value"),
             CodegenError::TooManyArguments { function, limit, span } => Diagnostic::error(
                 codes::UNSUPPORTED_CONSTRUCT,
                 format!("a call in `{function}` passes more than {limit} arguments"),
             )
             .with_primary(*span, "too many arguments")
-            .with_note("passing arguments on the stack is not implemented in Noto 0.1"),
+            .with_note("passing arguments on the stack is not implemented in Noto 0.3"),
             CodegenError::Internal(message) => Diagnostic::fatal(
                 codes::UNSUPPORTED_CONSTRUCT,
                 format!("internal compiler error: {message}"),

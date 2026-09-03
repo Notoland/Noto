@@ -48,6 +48,37 @@ SSA convention (LLVM, Cranelift's original form, most modern IRs):
 The bet: at Noto's optimisation tier, transliteration clarity beats
 textbook IR purity. Revisit with an RFC if the optimizer outgrows it.
 
+## Objects are addresses, not aggregates
+
+The IR has no aggregate type and no field access. An object is a pointer,
+and three instructions do the work:
+
+```
+%0 = alloc 16          reserve 16 bytes, produce their address
+store [%0+8] 4:i64     write a word at address + 8
+%1 = load [%0+8]       read a word from address + 8
+```
+
+Field names and layout are the front end's business. Lowering knows a class's
+field order, turns each field into a byte offset, and from there the IR — and
+the backend — deal only in addresses. That keeps the object model out of
+three crates that do not need to know about it, and means a future feature
+that lays memory out differently (packed fields, inline objects, tagged
+enums) changes lowering alone.
+
+The offsets it produces today are simple: **every field takes a full machine
+word**, so field *n* lives at *n × 8*. That wastes space on a `Bool` and
+keeps every access aligned, and it is what makes the alternative easy to see
+in a diff when the memory model settles.
+
+`alloc` calls the runtime's bump allocator, which never frees. The memory it
+returns is uninitialised — the code that allocates an object writes every
+field before the pointer escapes.
+
+Note that `load` prints two ways: `load $0` reads a local slot, `load [%1+0]`
+reads memory. The brackets are the difference, and they are the reason the
+textual form does not use bare `+`.
+
 ## Intrinsics and the runtime contract
 
 Operations the machine cannot express as pure arithmetic — `println`,

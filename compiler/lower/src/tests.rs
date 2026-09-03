@@ -367,10 +367,12 @@ fn crosses_blocks(function: &noto_ir::Function, value: noto_ir::ValueId) -> bool
 fn operands(kind: &noto_ir::InstKind) -> Vec<noto_ir::Operand> {
     use noto_ir::InstKind::*;
     match kind {
-        Const { .. } | LoadLocal { .. } => Vec::new(),
+        Const { .. } | LoadLocal { .. } | Alloc { .. } => Vec::new(),
         StoreLocal { value, .. } => vec![value.clone()],
         Unary { operand, .. } | Cast { operand, .. } => vec![operand.clone()],
+        Load { address, .. } => vec![address.clone()],
         Binary { left, right, .. } => vec![left.clone(), right.clone()],
+        Store { address, value, .. } => vec![address.clone(), value.clone()],
         Call { arguments, .. } | Intrinsic { arguments, .. } => arguments.clone(),
     }
 }
@@ -389,4 +391,93 @@ fn tests_are_lowered_as_functions() {
             &inst.kind,
             noto_ir::InstKind::Intrinsic { which: Intrinsic::Assert, .. }
         )));
+}
+
+// --- objects ---------------------------------------------------------------
+
+#[test]
+fn constructing_an_object_allocates_and_stores_every_field() {
+    let ir = function_ir(
+        "class Point(val x: Int, val y: Int)\nfn make(): Point = Point(3, 4)\n",
+        "make",
+    );
+    assert!(ir.contains("alloc 16"), "{ir}");
+    assert!(ir.contains("store [%0+0] 3:i64"), "{ir}");
+    assert!(ir.contains("store [%0+8] 4:i64"), "{ir}");
+}
+
+#[test]
+fn an_object_with_no_fields_still_gets_an_address() {
+    let ir = function_ir("class Marker()\nfn make(): Marker = Marker()\n", "make");
+    assert!(ir.contains("alloc 8"), "two markers must not share an address: {ir}");
+}
+
+#[test]
+fn a_field_is_read_at_its_offset() {
+    let ir = function_ir(
+        "class Point(val x: Int, val y: Int)\nfn second(p: Point): Int = p.y\n",
+        "second",
+    );
+    assert!(ir.contains("+8]"), "the second field sits one word in: {ir}");
+}
+
+#[test]
+fn a_field_write_stores_at_the_same_offset_it_reads() {
+    let ir = function_ir(
+        "class Counter(var count: Int)\nfn bump(c: Counter) {\n    c.count = 1\n}\n",
+        "bump",
+    );
+    assert!(ir.contains("store [%0+0] 1:i64"), "{ir}");
+}
+
+#[test]
+fn a_compound_field_assignment_reads_and_writes_one_object() {
+    let ir = function_ir(
+        "class Counter(var count: Int)\nfn bump(c: Counter) {\n    c.count += 1\n}\n",
+        "bump",
+    );
+    // One load of the receiver slot: evaluating it twice would read one
+    // object and store into another.
+    assert_eq!(ir.matches("load $0").count(), 1, "{ir}");
+    assert!(ir.contains("load [%0+0]"), "{ir}");
+    assert!(ir.contains("add"), "{ir}");
+    assert!(ir.contains("store [%0+0]"), "{ir}");
+}
+
+#[test]
+fn a_field_holding_an_object_is_a_pointer() {
+    let ir = function_ir(
+        "class Inner(val n: Int)\nclass Outer(val inner: Inner)\n\
+         fn reach(o: Outer): Int = o.inner.n\n",
+        "reach",
+    );
+    assert!(ir.contains("load [%0+0]"), "the field, then the field of the field: {ir}");
+    assert!(ir.contains("load [%1+0]"), "{ir}");
+}
+
+#[test]
+fn constructor_arguments_are_evaluated_before_the_allocation() {
+    // Whatever the arguments call runs in the order it was written, which is
+    // only true if none of it is deferred past the alloc.
+    let ir = function_ir(
+        "class Pair(val a: Int, val b: Int)\nfn one(): Int = 1\n\
+         fn make(): Pair = Pair(one(), one())\n",
+        "make",
+    );
+    let alloc = ir.find("alloc").expect("an allocation");
+    let last_call = ir.rfind("call fn").expect("both calls");
+    assert!(last_call < alloc, "the calls come first:\n{ir}");
+}
+
+#[test]
+fn a_field_past_the_first_hundred_bytes_gets_its_real_offset() {
+    // Offsets above 127 leave the byte-displacement encoding behind, so the
+    // layout rule has to hold past it as plainly as it does at zero.
+    let fields: Vec<String> = (0..20).map(|index| format!("val f{index}: Int")).collect();
+    let source = format!(
+        "class Wide({})\nfn last(w: Wide): Int = w.f19\n",
+        fields.join(", ")
+    );
+    let ir = function_ir(&source, "last");
+    assert!(ir.contains("+152]"), "field 19 sits at 19 * 8: {ir}");
 }

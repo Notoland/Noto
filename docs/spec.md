@@ -1,9 +1,9 @@
-# The Noto language specification — 0.1
+# The Noto language specification — 0.3
 
 The language as implemented, section by section. Everything marked **not
 implemented** parses (the parser covers the full grammar) but is rejected
 during semantic analysis or lowering with `NOTO0500 … not implemented in
-Noto 0.1`. Nothing is silently accepted and miscompiled.
+Noto 0.3`. Nothing is silently accepted and miscompiled.
 
 This document describes behaviour; syntax details that deserve their own
 rationale live in [design/](design/).
@@ -35,10 +35,47 @@ test "addition works" {
   implemented.
 - `const` declares a compile-time constant; constant expressions are folded.
 - `test "name" { … }` declares a test. Tests are collected, type checked and
-  lowered (as functions named `test$<name>`); the `noto test` driver that
-  runs them is not implemented yet.
-- Not implemented: `class`, `struct`, `data class`, `interface`, `enum`,
-  generics, extension functions, local `fn` inside a body, named arguments.
+  lowered as functions named `test$<name>`; `noto test` compiles one
+  executable per test and runs each in its own process.
+- `class` declares an object type — see [Objects](#objects).
+- Not implemented: `struct`, `data class`, `data struct`, `interface`,
+  `enum`, generics, extension functions, local `fn` inside a body, named
+  arguments.
+
+## Objects
+
+```noto
+class Point(val x: Int, var y: Int)
+
+fn main() {
+    val p = Point(3, 4)
+    p.y = 10
+    println(p.x + p.y)
+}
+```
+
+A `class` declares a type and, with it, one constructor: its parameter list
+is its field list, in order. Fields need declared types — there is no
+initialiser to infer one from — and a field is read with `.` and written with
+`.` when it was declared `var`. Assigning to a `val` field is `NOTO0304`, the
+same diagnostic a `val` binding gets.
+
+A class name may be used before it is declared, as a type or as a
+constructor, so declaration order in a file never matters.
+
+**An object is a reference.** `val b = a` makes `b` name the same object as
+`a`, and a change through one is visible through the other. Every object is
+allocated on the heap, which today never frees — see
+[RFC 0001](rfcs/0001-memory-model.md).
+
+That is why `struct` and the `data` flavours are still rejected: they promise
+value semantics, copied on assignment, and giving them reference semantics
+under a keyword that says otherwise would be worse than refusing them.
+
+Not implemented for classes: methods, properties with `get`/`set`, fields
+declared in the class body, default values for fields, inheritance,
+interfaces, generics, `data class` equality and printing. An object has no
+`toString`, so `println(p)` does not compile — print its fields.
 
 ## Statements and termination
 
@@ -92,7 +129,9 @@ T?   — nullable
   safe calls `?.f()`, `is`/`as`, `?` propagation.
 - Strings: `$name` and `${expr}` interpolation, `+` concatenation,
   `.length`, `.toString()` on the scalar types.
-- Not implemented: lambdas as values, tuples, lists, `await`, `unsafe`.
+- Not implemented: lambdas as values, tuples, lists, `await`, `unsafe`, and
+  safe field access (`p?.x`), which needs a null check lowering does not emit
+  yet.
 
 ## Built-ins
 

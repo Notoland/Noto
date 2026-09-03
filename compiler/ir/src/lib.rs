@@ -306,8 +306,9 @@ impl Inst {
             | InstKind::Unary { dest, .. }
             | InstKind::Binary { dest, .. }
             | InstKind::Cast { dest, .. } => Some(*dest),
+            InstKind::Alloc { dest, .. } | InstKind::Load { dest, .. } => Some(*dest),
             InstKind::Call { dest, .. } | InstKind::Intrinsic { dest, .. } => *dest,
-            InstKind::StoreLocal { .. } => None,
+            InstKind::StoreLocal { .. } | InstKind::Store { .. } => None,
         }
     }
 }
@@ -382,6 +383,34 @@ pub enum InstKind {
         which: Intrinsic,
         /// The arguments.
         arguments: Vec<Operand>,
+    },
+    /// Reserves `size` bytes of heap and produces a pointer to them.
+    ///
+    /// The memory is not initialised: whoever allocates an object writes
+    /// every one of its fields before the pointer escapes.
+    Alloc {
+        /// Where the pointer goes.
+        dest: ValueId,
+        /// How many bytes to reserve.
+        size: u32,
+    },
+    /// Reads a value from `address + offset`.
+    Load {
+        /// Where the result goes.
+        dest: ValueId,
+        /// The base pointer.
+        address: Operand,
+        /// The byte offset added to it.
+        offset: u32,
+    },
+    /// Writes a value to `address + offset`.
+    Store {
+        /// The base pointer.
+        address: Operand,
+        /// The byte offset added to it.
+        offset: u32,
+        /// The value to write.
+        value: Operand,
     },
 }
 
