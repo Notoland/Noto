@@ -99,7 +99,7 @@ pub fn compile(
 
     // A program without `main` cannot be run, but it can still be checked, so
     // this is only an error once code generation is asked for.
-    if options.stage >= Stage::Ir && analysis.entry.is_none() {
+    if options.stage >= Stage::Ir && analysis.entry.is_none() && !options.allow_no_main {
         sink.emit(
             Diagnostic::error(codes::NO_MAIN, "this program has no `main` function")
                 .with_note(format!("`{}` declares no entry point", source.name()))
@@ -183,6 +183,19 @@ mod tests {
         let mut sink = DiagnosticSink::new();
         compile_source("a.noto", source, &options(Stage::Executable), &mut sink);
         assert!(sink.diagnostics().iter().any(|d| d.message.contains("no `main` function")));
+    }
+
+    #[test]
+    fn the_test_runner_may_build_a_file_without_main() {
+        let mut sink = DiagnosticSink::new();
+        let (_, compilation) = compile_source(
+            "a.noto",
+            "test \"adds\" {\n    assert(1 + 1 == 2)\n}\n",
+            &CompileOptions { allow_no_main: true, ..CompileOptions::default() },
+            &mut sink,
+        );
+        assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+        assert!(compilation.is_complete(), "a file of tests still produces an executable");
     }
 
     #[test]

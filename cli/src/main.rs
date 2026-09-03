@@ -7,6 +7,7 @@
 use noto_codegen::EXECUTABLE_MODE;
 use noto_diagnostics::RenderStyle;
 use noto_driver::{compile, read_source, summary, CompileOptions, Stage};
+use noto_test_runner::TestOptions;
 use noto_span::SourceMap;
 use std::io::IsTerminal;
 use std::os::unix::fs::PermissionsExt;
@@ -45,6 +46,10 @@ enum Command {
     Check {
         input: PathBuf,
     },
+    Test {
+        input: PathBuf,
+        filter: Option<String>,
+    },
     Version,
     Help,
 }
@@ -72,6 +77,26 @@ impl Command {
             "check" => Ok(Command::Check {
                 input: input_of(rest)?,
             }),
+            "test" => {
+                let mut filter = None;
+                let mut input = None;
+                let mut rest = rest.iter();
+                while let Some(arg) = rest.next() {
+                    match arg.as_str() {
+                        "--filter" => {
+                            let value = rest
+                                .next()
+                                .ok_or_else(|| "`--filter` needs a value".to_string())?;
+                            filter = Some(value.clone());
+                        }
+                        other => input = Some(PathBuf::from(other)),
+                    }
+                }
+                Ok(Command::Test {
+                    input: input.ok_or("`test` needs an input file")?,
+                    filter,
+                })
+            }
             "build" => {
                 let mut output = None;
                 let mut emit = Emit::Default;
@@ -115,6 +140,7 @@ fn run(command: Command) -> ExitCode {
         Command::Run { input } => (input, Stage::Executable),
         Command::Build { input, emit, .. } => (input, emit_stage(emit)),
         Command::Check { input } => (input, Stage::Check),
+        Command::Test { input, .. } => (input, Stage::Ir),
     };
 
     let mut map = SourceMap::new();
@@ -126,6 +152,8 @@ fn run(command: Command) -> ExitCode {
 
     let options = CompileOptions {
         stage,
+        // A file of tests is a legitimate program without a `main`.
+        allow_no_main: matches!(command, Command::Test { .. }),
         ..CompileOptions::default()
     };
     let result = compile(&map, file, &options, &mut sink);
@@ -186,6 +214,22 @@ fn run(command: Command) -> ExitCode {
                 }
             }
         }
+        Command::Test { filter, .. } => {
+            let Some(mut program) = result.ir else {
+                return ExitCode::FAILURE;
+            };
+            let options = TestOptions {
+                filter,
+                ..TestOptions::default()
+            };
+            let report = noto_test_runner::run(&mut program, &options);
+            print!("{}", report.render(style()));
+            if report.is_success() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
         Command::Version | Command::Help => ExitCode::SUCCESS,
     }
 }
@@ -213,15 +257,19 @@ fn write_executable(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// Prints diagnostics and, when there is anything to count, the one-line
 /// summary, the way rustc does.
 fn report(map: &SourceMap, sink: &noto_diagnostics::DiagnosticSink) {
-    let style = if std::io::stdout().is_terminal() {
-        RenderStyle::Ansi
-    } else {
-        RenderStyle::Plain
-    };
-    print!("{}", sink.render_all(map, style));
+    print!("{}", sink.render_all(map, style()));
     let summary = summary(sink);
     if !summary.is_empty() {
         println!("{summary}");
+    }
+}
+
+/// Colour only when a terminal is there to read it.
+fn style() -> RenderStyle {
+    if std::io::stdout().is_terminal() {
+        RenderStyle::Ansi
+    } else {
+        RenderStyle::Plain
     }
 }
 
@@ -237,6 +285,8 @@ commands:
     -o, --output <path>    where to write it instead
     --emit=ir              print the textual Noto IR instead
   check <file.noto>        parse and analyse, report diagnostics only
+  test <file.noto>         compile and run every `test` declaration
+    --filter <text>        only run tests whose name contains <text>
   version                  print the version
   help                     print this message",
         env!("CARGO_PKG_VERSION")

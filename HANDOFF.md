@@ -54,10 +54,10 @@ noto/
 │   ├── codegen/      noto-codegen      x86-64 backend + ELF writer           16 tests
 │   └── driver/       noto-driver       pipeline orchestration                 6 tests
 ├── runtime/          noto-runtime      runtime contract (no machine code)     3 tests
-├── cli/              noto-cli          STUB: `fn main() {}`
+├── cli/              noto-cli          the `noto` command
 ├── formatter/        noto-formatter    STUB
 ├── linter/           noto-linter       STUB
-├── test-runner/      noto-test-runner  STUB
+├── test-runner/      noto-test-runner  `noto test`, one process per test  11 tests
 ├── lsp/              noto-lsp          STUB
 ├── debugger/         noto-debugger     STUB
 ├── std/              EMPTY
@@ -208,11 +208,9 @@ handful of intrinsics.
 - **linter** (`noto lint`) — codes `NOTO0600`-`0603` are already allocated:
   unused binding, `var` never reassigned, unreachable code, unused import.
   `noto_ast::visit::Visitor` is the traversal.
-- **test runner** (`noto test`) — tests are already collected into
-  `Analysis::tests` and lowered as functions named `test$<name>`. What is
-  missing is emitting a driver that calls each one and reports results.
-  `ASSERT_FAILURE_STATUS = 101` distinguishes an assertion failure from an
-  ordinary non-zero exit.
+- ~~**test runner** (`noto test`)~~ — done. Compiles the file once, then emits
+  one executable per test with that test as `Program::entry` and runs each in
+  its own process. `CompileOptions::allow_no_main` lets a file of tests build.
 
 ### 5.5 Language work, roughly in dependency order
 

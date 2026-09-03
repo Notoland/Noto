@@ -163,8 +163,11 @@ version = "0.1.0"
 name = "noto-test-runner"
 version = "0.1.0"
 dependencies = [
+ "noto-codegen",
  "noto-diagnostics",
  "noto-driver",
+ "noto-ir",
+ "noto-runtime",
  "noto-span",
 ]
 

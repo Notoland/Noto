@@ -1,0 +1,26 @@
+// Run these with `noto test examples/tests.noto`.
+
+fn add(a: Int, b: Int): Int { return a + b }
+
+fn classify(age: Int): String = when (age) {
+    0..12  -> "Criança"
+    13..17 -> "Adolescente"
+    else   -> "Adulto"
+}
+
+test "add sums its arguments" {
+    assert(add(2, 3) == 5)
+    assert(add(-1, 1) == 0)
+}
+
+test "classify names each age band" {
+    assert(classify(7) == "Criança")
+    assert(classify(15) == "Adolescente")
+    assert(classify(30) == "Adulto")
+}
+
+test "a loop accumulates" {
+    var total = 0
+    for i in 1..=10 { total += i }
+    assert(total == 55)
+}

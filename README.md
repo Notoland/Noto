@@ -178,12 +178,33 @@ The implemented commands:
 noto run <file.noto>        compile to a temporary executable and run it
 noto build <file.noto>      write the executable next to the source
 noto check <file.noto>      parse and analyse, report diagnostics only
+noto test <file.noto>       compile and run every `test` declaration
 noto version                print the version
 ```
 
 `noto build` also accepts `-o/--output <path>` and `--emit=ir`, which prints
-the textual Noto IR instead of writing an executable. Still planned: `noto
-test`, `noto fmt`, `noto lint`, `noto new`, `noto clean`.
+the textual Noto IR instead of writing an executable. `noto test` accepts
+`--filter <text>` to run only the tests whose name contains it. Still planned:
+`noto fmt`, `noto lint`, `noto new`, `noto clean`.
+
+Tests need no `main` and no test framework — a `test` declaration is part of
+the language:
+
+```noto
+fn add(a: Int, b: Int): Int = a + b
+
+test "add sums its arguments" {
+    assert(add(2, 3) == 5)
+}
+```
+
+```bash
+cargo run -q -p noto-cli -- test examples/tests.noto
+```
+
+Each test is compiled as its own executable with that test as the entry point
+and run in its own process, so a failing `assert` — which ends the process,
+because Noto has no unwinding — cannot hide the tests after it.
 
 ## Project layout
 

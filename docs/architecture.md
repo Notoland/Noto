@@ -152,9 +152,23 @@ allocator behind allocation intrinsics is currently a bump pointer over
 ### The tooling crates
 
 `noto-cli` (the `noto` command), `noto-formatter`, `noto-linter`,
-`noto-test-runner`, `noto-lsp`, `noto-debugger`. Only the CLI is implemented;
-the others are placeholders. They are crates already so that their public
-APIs can grow without dependency churn later.
+`noto-test-runner`, `noto-lsp`, `noto-debugger`. The CLI and the test runner
+are implemented; the others are placeholders. They are crates already so that
+their public APIs can grow without dependency churn later.
+
+`noto-test-runner` reuses the pipeline rather than adding one. Semantic
+analysis already records each `test` declaration and lowering already emits
+its body as a function named `test$<name>`, so the runner compiles the file
+once to Noto IR, then asks the backend for one executable per test with that
+test set as `Program::entry`. Nothing about the backend is test-aware.
+
+One process per test is a deliberate choice, not an accident of the design. A
+failing `assert` exits with `ASSERT_FAILURE_STATUS` (101) and there is no
+unwinding to catch it, so a single binary calling every test in turn would
+stop at the first failure. Separate processes also keep a test that corrupts
+memory from taking the rest of the run with it, and make the exit status the
+whole reporting protocol: `0` passed, `101` failed an assertion, anything else
+is reported with its status.
 
 ## House rules the code follows
 
