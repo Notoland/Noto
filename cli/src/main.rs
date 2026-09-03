@@ -54,8 +54,23 @@ enum Command {
         input: PathBuf,
         deny_warnings: bool,
     },
+    Fmt {
+        input: PathBuf,
+        mode: FmtMode,
+    },
     Version,
     Help,
+}
+
+/// What `noto fmt` does with the formatted text.
+#[derive(Clone, Copy, PartialEq)]
+enum FmtMode {
+    /// Rewrite the file in place.
+    Write,
+    /// Report whether the file is already formatted and change nothing.
+    Check,
+    /// Print the formatted text and change nothing.
+    Stdout,
 }
 
 /// What to do with the compilation product besides diagnostics.
@@ -81,6 +96,21 @@ impl Command {
             "check" => Ok(Command::Check {
                 input: input_of(rest)?,
             }),
+            "fmt" => {
+                let mut mode = FmtMode::Write;
+                let mut input = None;
+                for arg in rest {
+                    match arg.as_str() {
+                        "--check" => mode = FmtMode::Check,
+                        "--stdout" => mode = FmtMode::Stdout,
+                        other => input = Some(PathBuf::from(other)),
+                    }
+                }
+                Ok(Command::Fmt {
+                    input: input.ok_or("`fmt` needs an input file")?,
+                    mode,
+                })
+            }
             "lint" => {
                 let mut deny_warnings = false;
                 let mut input = None;
@@ -153,6 +183,12 @@ fn input_of(args: &[String]) -> Result<PathBuf, String> {
 }
 
 fn run(command: Command) -> ExitCode {
+    // Formatting is the one command that never compiles: it works on the
+    // token stream, so it runs before the pipeline is involved at all.
+    if let Command::Fmt { input, mode } = &command {
+        return fmt(input, *mode);
+    }
+
     let (input, stage) = match &command {
         Command::Version | Command::Help => return ExitCode::SUCCESS,
         Command::Run { input } => (input, Stage::Executable),
@@ -160,6 +196,7 @@ fn run(command: Command) -> ExitCode {
         Command::Check { input } => (input, Stage::Check),
         Command::Test { input, .. } => (input, Stage::Ir),
         Command::Lint { input, .. } => (input, Stage::Check),
+        Command::Fmt { .. } => unreachable!("handled above"),
     };
 
     let mut map = SourceMap::new();
@@ -267,7 +304,52 @@ fn run(command: Command) -> ExitCode {
                 ExitCode::SUCCESS
             }
         }
+        Command::Fmt { .. } => unreachable!("handled above"),
         Command::Version | Command::Help => ExitCode::SUCCESS,
+    }
+}
+
+/// Runs `noto fmt`.
+fn fmt(input: &Path, mode: FmtMode) -> ExitCode {
+    let mut map = SourceMap::new();
+    let mut sink = noto_diagnostics::DiagnosticSink::new();
+    let Some(file) = read_source(&mut map, input, &mut sink) else {
+        report(&map, &sink);
+        return ExitCode::FAILURE;
+    };
+
+    let source = map.file(file).expect("just read");
+    let Some(formatted) = noto_formatter::format(source, &mut sink) else {
+        report(&map, &sink);
+        return ExitCode::FAILURE;
+    };
+    report(&map, &sink);
+
+    let unchanged = formatted == source.text();
+    match mode {
+        FmtMode::Stdout => {
+            print!("{formatted}");
+            ExitCode::SUCCESS
+        }
+        FmtMode::Check => {
+            if unchanged {
+                ExitCode::SUCCESS
+            } else {
+                println!("{} is not formatted", input.display());
+                ExitCode::FAILURE
+            }
+        }
+        FmtMode::Write => {
+            if unchanged {
+                return ExitCode::SUCCESS;
+            }
+            if let Err(error) = std::fs::write(input, &formatted) {
+                eprintln!("error: cannot write `{}`: {}", input.display(), error);
+                return ExitCode::FAILURE;
+            }
+            println!("formatted {}", input.display());
+            ExitCode::SUCCESS
+        }
     }
 }
 
@@ -326,6 +408,9 @@ commands:
     --filter <text>        only run tests whose name contains <text>
   lint <file.noto>         report what is legal but probably not meant
     -D, --deny-warnings    exit non-zero when any lint fires
+  fmt <file.noto>          format the file in place
+    --check                exit non-zero if it is not already formatted
+    --stdout               print the formatted text instead of writing it
   version                  print the version
   help                     print this message",
         env!("CARGO_PKG_VERSION")

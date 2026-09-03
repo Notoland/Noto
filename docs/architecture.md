@@ -152,8 +152,9 @@ allocator behind allocation intrinsics is currently a bump pointer over
 ### The tooling crates
 
 `noto-cli` (the `noto` command), `noto-formatter`, `noto-linter`,
-`noto-test-runner`, `noto-lsp`, `noto-debugger`. The CLI, the linter and the
-test runner are implemented; the others are placeholders. They are crates already so that
+`noto-test-runner`, `noto-lsp`, `noto-debugger`. The CLI, the formatter, the
+linter and the test runner are implemented; the LSP and the debugger are
+placeholders. They are crates already so that
 their public APIs can grow without dependency churn later.
 
 `noto-test-runner` reuses the pipeline rather than adding one. Semantic
@@ -161,6 +162,18 @@ analysis already records each `test` declaration and lowering already emits
 its body as a function named `test$<name>`, so the runner compiles the file
 once to Noto IR, then asks the backend for one executable per test with that
 test set as `Program::entry`. Nothing about the backend is test-aware.
+
+`noto-formatter` is the one tool that does not use the AST. Two facts push it
+onto the token stream instead. The lexer drops `//` and `/* */` as trivia, so
+an AST printer would delete every ordinary comment in the file — the
+formatter recovers them from the source text between consecutive token spans,
+which is by definition what the lexer skipped. And every token is printed by
+copying its source slice, so no literal or identifier can be changed by being
+reprinted. It never moves code between lines, because a line break is part of
+Noto's grammar and re-flowing would mean deciding where statements end. The
+promise that falls out, and that its tests assert over a corpus, is that
+lexing the formatted text yields exactly the token stream lexing the original
+did. See `docs/design/formatter.md` for the rules themselves.
 
 `noto-linter` reads what analysis already learned rather than recomputing it:
 which name refers to which binding is the type checker's answer, and asking

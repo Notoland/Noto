@@ -55,7 +55,7 @@ noto/
 │   └── driver/       noto-driver       pipeline orchestration                 6 tests
 ├── runtime/          noto-runtime      runtime contract (no machine code)     3 tests
 ├── cli/              noto-cli          the `noto` command
-├── formatter/        noto-formatter    STUB
+├── formatter/        noto-formatter    `noto fmt`, token-stream based     31 tests
 ├── linter/           noto-linter       `noto lint`, NOTO0600/0601/0604/0605  18 tests
 ├── test-runner/      noto-test-runner  `noto test`, one process per test  11 tests
 ├── lsp/              noto-lsp          STUB
@@ -202,9 +202,11 @@ handful of intrinsics.
 
 ### 5.4 Tooling
 
-- **formatter** (`noto fmt`) — deterministic, opinionated. The lexer keeps
-  every token with spans and preserves doc comments, which is what a formatter
-  needs. Decide and document the rules first.
+- ~~**formatter** (`noto fmt`)~~ — done; the rules are in
+  `docs/design/formatter.md`. It works on the token stream, not the AST: the
+  lexer keeps only `///` comments, so an AST printer would delete the rest.
+  It does not re-flow lines — that needs its own RFC, because a line break is
+  part of the grammar.
 - ~~**linter** (`noto lint`)~~ — done, except `NOTO0603` (unused import),
   which needs the module system first. `NOTO0602` stayed in semantic analysis
   rather than moving to the linter: it falls out of the `Nothing` type for

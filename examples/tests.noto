@@ -3,9 +3,9 @@
 fn add(a: Int, b: Int): Int { return a + b }
 
 fn classify(age: Int): String = when (age) {
-    0..12  -> "Criança"
+    0..12 -> "Criança"
     13..17 -> "Adolescente"
-    else   -> "Adulto"
+    else -> "Adulto"
 }
 
 test "add sums its arguments" {

@@ -180,14 +180,16 @@ noto build <file.noto>      write the executable next to the source
 noto check <file.noto>      parse and analyse, report diagnostics only
 noto test <file.noto>       compile and run every `test` declaration
 noto lint <file.noto>       report what is legal but probably not meant
+noto fmt <file.noto>        format the file in place
 noto version                print the version
 ```
 
 `noto build` also accepts `-o/--output <path>` and `--emit=ir`, which prints
 the textual Noto IR instead of writing an executable. `noto test` accepts
 `--filter <text>` to run only the tests whose name contains it, and
-`noto lint` accepts `-D/--deny-warnings` to exit non-zero when any lint fires.
-Still planned: `noto fmt`, `noto new`, `noto clean`.
+`noto lint` accepts `-D/--deny-warnings` to exit non-zero when any lint fires,
+and `noto fmt` accepts `--check` and `--stdout`. Still planned: `noto new`,
+`noto clean`.
 
 Every lint is a warning with a stable code — `NOTO0600` a binding nothing
 reads, `NOTO0601` a `var` nothing reassigns, `NOTO0604` a function nothing
@@ -212,6 +214,14 @@ cargo run -q -p noto-cli -- test examples/tests.noto
 Each test is compiled as its own executable with that test as the entry point
 and run in its own process, so a failing `assert` — which ends the process,
 because Noto has no unwinding — cannot hide the tests after it.
+
+`noto fmt` is deterministic and has no options: one input has one formatting.
+It changes whitespace and nothing else, and it never moves code between lines
+— a line break is part of Noto's grammar, so re-flowing lines would mean
+deciding where statements end. The rules are written down in
+[docs/design/formatter.md](docs/design/formatter.md), and the formatter holds
+itself to a promise there is a test for: **lexing the formatted text produces
+exactly the token stream that lexing the original produced.**
 
 ## Project layout
 
