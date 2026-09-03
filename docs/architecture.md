@@ -109,6 +109,17 @@ checked.
 The error type absorbs everything, so one mistake produces one diagnostic
 instead of a cascade. There is a test for this.
 
+A program of many modules is analysed at once, in three passes whose order
+the language forces rather than taste: every module's class names, then every
+module's signatures and fields, then every module's bodies. A signature
+anywhere may name a class anywhere, and a body may call anything.
+
+Imports are never copied into a scope. A name an import brings in is resolved
+by following the import to the module that declares it and asking that
+module's export table — which is what lets signatures be collected before
+imports have been checked, and what makes a module's own declaration win over
+an imported one without any precedence rule to state.
+
 ### `noto-ir` — Noto IR
 
 The instruction set lowering targets and the optimizer transforms: locals as
@@ -147,11 +158,18 @@ exact instruction bytes.
 
 ### `noto-driver` — orchestration
 
-`read_source`, `compile`, `CompileOptions { stage, target, optimize,
+`read_source`, `compile_path`, `CompileOptions { stage, target, optimize,
 allow_no_main }` and
 `Stage::{Parse, Check, Ir, Executable}` — how far a compilation should go.
 `noto check` and `noto build` share exactly the same front end; they differ
 only in the stage they ask for.
+
+The driver also owns the module graph. `modules.rs` reads the root, resolves
+each `import` to a file relative to the root's directory, and repeats
+breadth-first until nothing is left, reporting a missing module or a cycle
+before any checking starts. Node ids run across the whole program — every
+side table analysis fills is keyed by `NodeId` — so each file is parsed with
+`parse_file_from`, continuing where the last one stopped.
 
 ### `noto-runtime` — the runtime contract
 

@@ -1,19 +1,39 @@
-# The Noto language specification — 0.3
+# The Noto language specification — 0.4
 
 The language as implemented, section by section. Everything marked **not
 implemented** parses (the parser covers the full grammar) but is rejected
 during semantic analysis or lowering with `NOTO0500 … not implemented in
-Noto 0.3`. Nothing is silently accepted and miscompiled.
+Noto 0.4`. Nothing is silently accepted and miscompiled.
 
 This document describes behaviour; syntax details that deserve their own
 rationale live in [design/](design/).
 
 ## Programs and files
 
-A program is one `.noto` file with a `fn main()` — multi-file compilation
-(**`import`/`export`**) is not implemented. Execution starts at `main` and the
-program's exit status is 0 unless `main` is changed to return otherwise (also
-not implemented: `main` returning `Int`).
+A program is a `.noto` file with a `fn main()`, plus every module it imports.
+The file handed to the compiler is the **root**, and its directory is where
+imports are resolved from: `import geometry.point` reads
+`geometry/point.noto`. Execution starts at the root's `main`, and the
+program's exit status is 0 unless `main` is changed to return otherwise (not
+implemented: `main` returning `Int`).
+
+Every declaration is private to its module; `export` makes one visible to a
+module that imports it.
+
+```noto
+import geometry.point              // binds `point`
+import geometry.point as geo       // binds `geo`
+import util { double }             // binds `double`
+
+export fn area(): Int = ...        // visible to importers
+fn helper(): Int = ...             // private to this module
+```
+
+A plain import binds the module's last segment as a namespace and its exports
+are reached through it — `point.distance(1, 2)`, `point.Point`. A selective
+import binds the names it lists directly. There is no wildcard import, and
+imports may not form a cycle. The whole design is in
+[design/modules.md](design/modules.md).
 
 ## Declarations
 
@@ -38,9 +58,11 @@ test "addition works" {
   lowered as functions named `test$<name>`; `noto test` compiles one
   executable per test and runs each in its own process.
 - `class` declares an object type — see [Objects](#objects).
+- `import` and `export` carry names across modules — see
+  [Programs and files](#programs-and-files).
 - Not implemented: `struct`, `data class`, `data struct`, `interface`,
   `enum`, generics, extension functions, local `fn` inside a body, named
-  arguments.
+  arguments, re-exporting an imported name.
 
 ## Objects
 

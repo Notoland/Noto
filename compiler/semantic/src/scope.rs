@@ -42,6 +42,15 @@ impl Scopes {
         self.scopes.pop();
     }
 
+    /// Leaves the innermost scope and returns what it bound.
+    ///
+    /// This is how a module's top-level names are kept: they are collected
+    /// into a scope like any others, then lifted out to be re-entered when
+    /// that module's bodies are checked.
+    pub fn take_top(&mut self) -> HashMap<String, Resolution> {
+        self.scopes.pop().map(|scope| scope.names).unwrap_or_default()
+    }
+
     /// Binds a name in the innermost scope, returning what it displaced there.
     pub fn declare(&mut self, name: impl Into<String>, resolution: Resolution) -> Option<Resolution> {
         let scope = self.scopes.last_mut().expect("a scope must be open");

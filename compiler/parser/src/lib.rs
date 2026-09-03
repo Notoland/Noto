@@ -45,9 +45,26 @@ pub use expr::Precedence;
 /// returned, even when it contains `Error` nodes, so that tooling can keep
 /// working on a file the user is still typing.
 pub fn parse_file(file: &SourceFile, sink: &mut DiagnosticSink) -> Module {
+    parse_file_from(file, noto_ast::NodeId(0), sink).0
+}
+
+/// Parses a file whose node ids continue from `first`, and says where the
+/// next file should start.
+///
+/// One program is many files, and everything analysis learns is keyed by
+/// [`NodeId`](noto_ast::NodeId) in one table, so two modules must never hand
+/// out the same id.
+pub fn parse_file_from(
+    file: &SourceFile,
+    first: noto_ast::NodeId,
+    sink: &mut DiagnosticSink,
+) -> (Module, noto_ast::NodeId) {
     let tokens = tokenize(file, sink);
     let span = Span::new(file.id(), 0, file.len());
-    Parser::new(tokens, span, sink).parse_module()
+    let mut parser = Parser::starting_at(tokens, span, first, sink);
+    let module = parser.parse_module();
+    let next = parser.ids.next_free();
+    (module, next)
 }
 
 /// Parses a token stream that was produced elsewhere, such as the body of a
@@ -101,11 +118,21 @@ pub struct Parser<'sink> {
 impl<'sink> Parser<'sink> {
     /// Creates a parser over an already-lexed token stream.
     pub fn new(tokens: Vec<Token>, file_span: Span, sink: &'sink mut DiagnosticSink) -> Self {
+        Parser::starting_at(tokens, file_span, noto_ast::NodeId(0), sink)
+    }
+
+    /// Creates a parser whose node ids continue from `first`.
+    pub fn starting_at(
+        tokens: Vec<Token>,
+        file_span: Span,
+        first: noto_ast::NodeId,
+        sink: &'sink mut DiagnosticSink,
+    ) -> Self {
         Parser {
             tokens,
             position: 0,
             sink,
-            ids: NodeIdGenerator::new(),
+            ids: NodeIdGenerator::starting_at(first),
             file_span,
             last_error_position: None,
             pending_data: false,

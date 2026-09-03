@@ -18,17 +18,17 @@
 //! |---|---|
 //! | `NOTO0600` | a binding that is never read |
 //! | `NOTO0601` | a `var` that is never reassigned |
+//! | `NOTO0603` | an import that nothing uses |
 //! | `NOTO0604` | a function that is never called |
 //! | `NOTO0605` | a constant that is never read |
 //!
-//! Two codes in the range are not the linter's. `NOTO0602` (unreachable code)
+//! One code in the range is not the linter's: `NOTO0602`, unreachable code,
 //! is emitted by semantic analysis, where it falls out of type checking for
-//! free and catches more than a syntactic lint could. `NOTO0603` (unused
-//! import) is allocated and unimplemented: Noto 0.2 compiles one file at a
-//! time and rejects `import` outright, so there is nothing yet to see.
+//! free and catches more than a syntactic lint could.
 
 #![deny(missing_docs)]
 
+mod imports;
 mod usage;
 
 use noto_ast::Module;
@@ -46,8 +46,35 @@ pub const IGNORED_PREFIX: &str = "_";
 /// Diagnostics come out in source order regardless of which lint produced
 /// them, which is what makes the output read like the file.
 pub fn lint(module: &Module, analysis: &Analysis, sink: &mut DiagnosticSink) {
+    lint_module(module, &[], analysis, sink)
+}
+
+/// Runs every lint over one module of a program, named by its id.
+
+/// Runs every lint over one module of a program.
+///
+/// `imports` is what that module imports, which the unused-import lint needs
+/// and nothing else does.
+pub fn lint_module(
+    module: &Module,
+    imports: &[noto_semantic::Import],
+    analysis: &Analysis,
+    sink: &mut DiagnosticSink,
+) {
+    lint_one(module, noto_semantic::ModuleId::ROOT, imports, analysis, sink)
+}
+
+/// Runs every lint over the module with the given id.
+pub fn lint_one(
+    module: &Module,
+    id: noto_semantic::ModuleId,
+    imports: &[noto_semantic::Import],
+    analysis: &Analysis,
+    sink: &mut DiagnosticSink,
+) {
     let mut found = Vec::new();
-    usage::check(module, analysis, &mut found);
+    usage::check(module, id, analysis, &mut found);
+    imports::check(module, imports, analysis, &mut found);
 
     found.sort_by_key(|diagnostic| {
         diagnostic.labels.first().map(|label| label.span.start).unwrap_or(0)

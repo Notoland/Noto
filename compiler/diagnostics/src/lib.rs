@@ -248,6 +248,8 @@ pub mod codes {
     pub const NO_MAIN: Code = Code(2);
     /// The file does not use the `.noto` extension.
     pub const BAD_EXTENSION: Code = Code(3);
+    /// Modules import each other in a cycle.
+    pub const IMPORT_CYCLE: Code = Code(4);
 
     // 0100-0199: lexer.
     /// A character that cannot start any Noto token.

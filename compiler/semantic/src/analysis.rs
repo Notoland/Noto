@@ -18,6 +18,17 @@ pub struct FunctionId(pub u32);
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct ConstId(pub u32);
 
+/// Identifies a module within one compilation.
+///
+/// `ModuleId(0)` is always the root — the file the compiler was pointed at.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
+pub struct ModuleId(pub u32);
+
+impl ModuleId {
+    /// The module the compiler was pointed at.
+    pub const ROOT: ModuleId = ModuleId(0);
+}
+
 /// Identifies a declared class.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct ClassId(pub u32);
@@ -35,6 +46,8 @@ pub enum Resolution {
     Class(ClassId),
     /// A method called through a receiver.
     Method(FunctionId),
+    /// A module bound by an import, used as a namespace.
+    Module(ModuleId),
     /// A field read or written through a receiver.
     Field {
         /// The class the field belongs to.
@@ -70,6 +83,10 @@ pub struct LocalInfo {
 pub struct FunctionInfo {
     /// The name as written.
     pub name: String,
+    /// The module that declares it.
+    pub module: ModuleId,
+    /// Whether it is visible to a module that imports this one.
+    pub is_exported: bool,
     /// Its parameters, in declaration order.
     pub parameters: Vec<LocalId>,
     /// The declared or inferred result type.
@@ -89,6 +106,10 @@ pub struct FunctionInfo {
 pub struct ConstInfo {
     /// The name as written.
     pub name: String,
+    /// The module that declares it.
+    pub module: ModuleId,
+    /// Whether it is visible to a module that imports this one.
+    pub is_exported: bool,
     /// Its type.
     pub ty: TypeId,
     /// The value it was folded to.
@@ -139,6 +160,10 @@ pub struct MethodInfo {
 pub struct ClassInfo {
     /// The name as written.
     pub name: String,
+    /// The module that declares it.
+    pub module: ModuleId,
+    /// Whether it is visible to a module that imports this one.
+    pub is_exported: bool,
     /// Its fields, in declaration order. The order is the object's layout.
     pub fields: Vec<FieldInfo>,
     /// Its methods, in declaration order.
@@ -195,6 +220,8 @@ pub struct Analysis {
     pub constants: Vec<ConstInfo>,
     /// Every class, indexed by [`ClassId`].
     pub classes: Vec<ClassInfo>,
+    /// The name of every module, indexed by [`ModuleId`]; the root's is empty.
+    pub modules: Vec<String>,
     /// Every test.
     pub tests: Vec<TestInfo>,
     /// The program's entry point, if it declares one.

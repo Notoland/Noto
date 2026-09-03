@@ -23,13 +23,13 @@ Hello, Noto!
 
 ## Status
 
-**Noto is in early development.** Version 0.3 is a working compiler for a real
+**Noto is in early development.** Version 0.4 is a working compiler for a real
 subset of the language, not a finished product. The pipeline runs end to end:
 source becomes a native Linux x86-64 executable that you can run.
 
 What that means in practice:
 
-- **392 tests pass, zero failures, zero warnings.**
+- **418 tests pass, zero failures, zero warnings.**
 - Constructs that are not implemented yet are **rejected with a clear error**,
   never silently accepted and miscompiled.
 - The parser covers the whole language; the back end does not yet.
@@ -95,6 +95,27 @@ is compiled to a function taking the receiver first, so it spends one of the
 six argument registers and takes at most five parameters of its own.
 Inheritance, interfaces and generics are not implemented yet.
 
+Modules:
+
+```noto
+// examples/modules.noto
+import geometry.vector
+import math { clamp }
+
+fn main() {
+    val delta = vector.between(vector.Vector(0, 0), vector.Vector(3, -4))
+    println("${delta.describe()} is ${delta.manhattan()} steps away")
+    println("clamped: ${clamp(delta.manhattan(), 0, 5)}")
+}
+```
+
+One file is one module and its path is its name: `import geometry.vector`
+reads `geometry/vector.noto` next to the root file. No manifest, no search
+path. Everything is private until `export`; a plain import binds the module
+as a namespace, a selective one binds the names it lists. There is no
+wildcard import and no import cycles. See
+[docs/design/modules.md](docs/design/modules.md).
+
 ```
 Olá, João! Soma = 55
 Adolescente
@@ -115,6 +136,7 @@ sem valor
 - `test "…" { … }` declarations, run by `noto test`
 - `class` with fields and methods: a constructor, field reads, field writes,
   `this`
+- `import` and `export`: a program made of many files
 
 ## Design
 

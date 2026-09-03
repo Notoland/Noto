@@ -19,11 +19,12 @@ pub mod analysis;
 pub mod builtins;
 mod check;
 mod collect;
+mod imports;
 mod scope;
 
 pub use analysis::{
     Analysis, ClassId, ClassInfo, ConstId, ConstInfo, ConstValue, FieldInfo, FunctionId,
-    FunctionInfo, LocalId, LocalInfo, MethodInfo, Resolution, TestInfo,
+    FunctionInfo, LocalId, LocalInfo, MethodInfo, ModuleId, Resolution, TestInfo,
 };
 
 /// The name the receiver of a method is bound to.
@@ -34,11 +35,40 @@ pub use analysis::{
 pub const RECEIVER_NAME: &str = "this";
 pub use builtins::Builtin;
 
-use noto_ast::Module;
+use noto_ast::{Ident, Module};
 use noto_diagnostics::DiagnosticSink;
+use noto_span::Span;
 use noto_types::{TypeId, TypeStore};
 use scope::Scopes;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
+/// One `import`, with the module it names already found.
+///
+/// The driver owns finding files; analysis only needs to know which module an
+/// import reaches and under what name.
+#[derive(Clone, Debug)]
+pub struct Import {
+    /// The module it names.
+    pub module: ModuleId,
+    /// The dotted path as written, for diagnostics.
+    pub path: String,
+    /// The namespace it binds, or `None` for a selective import.
+    pub binding: Option<String>,
+    /// The names selected from it; empty unless it is a selective import.
+    pub names: Vec<Ident>,
+    /// Where it was written.
+    pub span: Span,
+}
+
+/// One module handed to analysis.
+pub struct ModuleInput<'a> {
+    /// Its dotted name; empty for the root.
+    pub name: &'a str,
+    /// Its parsed contents.
+    pub ast: &'a Module,
+    /// What it imports.
+    pub imports: &'a [Import],
+}
 
 /// Analyses a parsed module.
 ///
@@ -46,9 +76,62 @@ use std::collections::HashMap;
 /// results are still structurally valid but contain error types, so later
 /// phases must check the sink before lowering.
 pub fn analyze(module: &Module, sink: &mut DiagnosticSink) -> Analysis {
+    analyze_program(&[ModuleInput { name: "", ast: module, imports: &[] }], sink)
+}
+
+/// Analyses a whole program: the root module and everything it imports.
+///
+/// The passes are ordered by what the language forces, not by taste. Class
+/// names come first because a signature anywhere may name a class declared
+/// anywhere, including in another module. Signatures and fields come next,
+/// because a body may call anything. Bodies come last.
+///
+/// Imports are never copied into a scope. A name that an import brings in is
+/// resolved by following the import to the module that declares it, which is
+/// what keeps the passes from needing each other's results.
+pub fn analyze_program(modules: &[ModuleInput], sink: &mut DiagnosticSink) -> Analysis {
     let mut checker = Checker::new(sink);
-    checker.collect_items(module);
-    checker.check_items(module);
+    checker.modules = modules.iter().map(|module| module.name.to_string()).collect();
+    checker.imports = modules.iter().map(|module| module.imports.to_vec()).collect();
+    checker.module_names = vec![HashMap::new(); modules.len()];
+    checker.module_types = vec![HashMap::new(); modules.len()];
+    checker.exported = vec![HashSet::new(); modules.len()];
+
+    for (index, module) in modules.iter().enumerate() {
+        checker.current_module = ModuleId(index as u32);
+        checker.declare_classes(module.ast);
+    }
+
+    for (index, module) in modules.iter().enumerate() {
+        checker.current_module = ModuleId(index as u32);
+        checker.scopes.push();
+        // The class pass already bound every class name as its constructor;
+        // collecting into the same scope keeps them.
+        for (name, resolution) in checker.module_names[index].clone() {
+            checker.scopes.declare(name, resolution);
+        }
+        checker.collect_items(module.ast);
+        checker.module_names[index] = checker.scopes.take_top();
+    }
+
+    checker.check_imports(modules);
+
+    for (index, module) in modules.iter().enumerate() {
+        checker.current_module = ModuleId(index as u32);
+        checker.scopes.push();
+        for (name, resolution) in checker.module_names[index].clone() {
+            checker.scopes.declare(name, resolution);
+        }
+        checker.check_items(module.ast);
+        checker.scopes.pop();
+    }
+
+    // Only the root's entry point runs; an imported module's `main`, if it
+    // has one, is an ordinary function here.
+    if let Some(entry) = checker.entry {
+        checker.check_entry_signature(entry);
+    }
+
     checker.finish()
 }
 
@@ -63,12 +146,22 @@ struct Checker<'sink> {
     functions: Vec<FunctionInfo>,
     constants: Vec<ConstInfo>,
     classes: Vec<ClassInfo>,
-    /// Class names, so that a type expression can find a declaration.
+    tests: Vec<TestInfo>,
+    /// The module whose declarations are being collected or checked.
+    current_module: ModuleId,
+    /// Every module's name, indexed by [`ModuleId`].
+    modules: Vec<String>,
+    /// What every module imports.
+    imports: Vec<Vec<Import>>,
+    /// Each module's own top-level value names.
+    module_names: Vec<HashMap<String, Resolution>>,
+    /// Each module's own type names.
     ///
     /// Types and values live in separate namespaces: `Point` as a type is
     /// looked up here, `Point` as a constructor through the value scopes.
-    class_names: HashMap<String, ClassId>,
-    tests: Vec<TestInfo>,
+    module_types: Vec<HashMap<String, ClassId>>,
+    /// The names each module exports, across both namespaces.
+    exported: Vec<HashSet<String>>,
     entry: Option<FunctionId>,
     /// The function whose body is being checked.
     current_function: Option<FunctionId>,
@@ -90,8 +183,13 @@ impl<'sink> Checker<'sink> {
             functions: Vec::new(),
             constants: Vec::new(),
             classes: Vec::new(),
-            class_names: HashMap::new(),
             tests: Vec::new(),
+            current_module: ModuleId::ROOT,
+            modules: vec![String::new()],
+            imports: vec![Vec::new()],
+            module_names: vec![HashMap::new()],
+            module_types: vec![HashMap::new()],
+            exported: vec![HashSet::new()],
             entry: None,
             current_function: None,
             expected_result,
@@ -106,10 +204,95 @@ impl<'sink> Checker<'sink> {
             functions: self.functions,
             constants: self.constants,
             classes: self.classes,
+            modules: self.modules,
             tests: self.tests,
             entry: self.entry,
             store: self.store,
         }
+    }
+
+    /// The current module's name prefixed to a declaration's.
+    ///
+    /// Only diagnostics see it, and only for types, where the same class name
+    /// in two modules would otherwise render identically.
+    fn qualify(&self, name: &str) -> String {
+        let module = &self.modules[self.current_module.0 as usize];
+        if module.is_empty() {
+            name.to_string()
+        } else {
+            format!("{module}.{name}")
+        }
+    }
+
+    /// A type declared by the module being checked.
+    fn own_type(&self, name: &str) -> Option<ClassId> {
+        self.module_types[self.current_module.0 as usize].get(name).copied()
+    }
+
+    /// Resolves a type name: this module's own, then what it imports.
+    ///
+    /// `point.Point` names the module a namespace binds; a bare name may also
+    /// come from a selective import.
+    fn lookup_type(&self, name: &str) -> Option<ClassId> {
+        if let Some(id) = self.own_type(name) {
+            return Some(id);
+        }
+        match name.split_once('.') {
+            Some((namespace, rest)) => {
+                let target = self.namespace(namespace)?;
+                self.export_type(target, rest)
+            }
+            None => self.selective(name).and_then(|target| self.export_type(target, name)),
+        }
+    }
+
+    /// The module a namespace name binds, if an import binds one.
+    fn namespace(&self, name: &str) -> Option<ModuleId> {
+        self.imports[self.current_module.0 as usize]
+            .iter()
+            .find(|import| import.binding.as_deref() == Some(name))
+            .map(|import| import.module)
+    }
+
+    /// The module a selective import brings `name` from.
+    fn selective(&self, name: &str) -> Option<ModuleId> {
+        self.imports[self.current_module.0 as usize]
+            .iter()
+            .find(|import| import.names.iter().any(|selected| selected.name == name))
+            .map(|import| import.module)
+    }
+
+    /// A type `target` exports under `name`.
+    fn export_type(&self, target: ModuleId, name: &str) -> Option<ClassId> {
+        let index = target.0 as usize;
+        if !self.exported[index].contains(name) {
+            return None;
+        }
+        self.module_types[index].get(name).copied()
+    }
+
+    /// A value `target` exports under `name`.
+    fn export_value(&self, target: ModuleId, name: &str) -> Option<Resolution> {
+        let index = target.0 as usize;
+        if !self.exported[index].contains(name) {
+            return None;
+        }
+        self.module_names[index].get(name).copied()
+    }
+
+    /// Resolves a value name: what is in scope, then what an import brings in.
+    ///
+    /// A module's own declaration wins over an imported one, which falls out
+    /// of asking the scopes first.
+    fn lookup_value(&self, name: &str) -> Option<Resolution> {
+        if let Some(resolution) = self.scopes.lookup(name) {
+            return Some(resolution);
+        }
+        // A namespace is not in any scope: it is the import itself.
+        if let Some(module) = self.namespace(name) {
+            return Some(Resolution::Module(module));
+        }
+        self.selective(name).and_then(|target| self.export_value(target, name))
     }
 
     /// The class a type names, if it names one.

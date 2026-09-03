@@ -8,11 +8,15 @@ use crate::{is_ignored, Found, TEST_PREFIX};
 use noto_ast::visit::{self, Visitor};
 use noto_ast::{Expr, ExprKind, Module};
 use noto_diagnostics::{codes, Diagnostic};
-use noto_semantic::{Analysis, ConstId, FunctionId, LocalId, Resolution};
+use noto_semantic::{Analysis, ConstId, FunctionId, LocalId, ModuleId, Resolution};
 use std::collections::HashSet;
 
 /// Reports every declaration nothing uses.
-pub(crate) fn check(module: &Module, analysis: &Analysis, found: &mut Found) {
+///
+/// `id` is the module `module` is the AST of. Only its own declarations are
+/// reported: the walk sees only this module's bodies, so a function called
+/// from somewhere else would look dead from here.
+pub(crate) fn check(module: &Module, id: ModuleId, analysis: &Analysis, found: &mut Found) {
     let mut usage = Usage {
         analysis,
         reads: HashSet::new(),
@@ -21,9 +25,9 @@ pub(crate) fn check(module: &Module, analysis: &Analysis, found: &mut Found) {
         constants: HashSet::new(),
     };
     usage.visit_module(module);
-    locals(analysis, &usage, found);
-    functions(analysis, &usage, found);
-    constants(analysis, &usage, found);
+    locals(id, analysis, &usage, found);
+    functions(id, analysis, &usage, found);
+    constants(id, analysis, &usage, found);
 }
 
 /// Reports functions nothing calls.
@@ -32,9 +36,14 @@ pub(crate) fn check(module: &Module, analysis: &Analysis, found: &mut Found) {
 /// `noto test`, so neither can be dead. A function called only from another
 /// dead function still counts as used: reachability is the optimizer's
 /// analysis, and a lint that guesses at it would be wrong in both directions.
-fn functions(analysis: &Analysis, usage: &Usage, found: &mut Found) {
+fn functions(module: ModuleId, analysis: &Analysis, usage: &Usage, found: &mut Found) {
     for (index, function) in analysis.functions.iter().enumerate() {
         let id = FunctionId(index as u32);
+        // An exported declaration is the module's surface, not its dead
+        // code: what calls it is by definition somewhere else.
+        if function.module != module || function.is_exported {
+            continue;
+        }
         let is_test = function.name.starts_with(TEST_PREFIX);
         // A method is named `Class.method`; the opt-out and the suggested
         // rename are about the part the author actually wrote.
@@ -61,9 +70,12 @@ fn functions(analysis: &Analysis, usage: &Usage, found: &mut Found) {
 }
 
 /// Reports constants nothing reads.
-fn constants(analysis: &Analysis, usage: &Usage, found: &mut Found) {
+fn constants(module: ModuleId, analysis: &Analysis, usage: &Usage, found: &mut Found) {
     for (index, constant) in analysis.constants.iter().enumerate() {
         let id = ConstId(index as u32);
+        if constant.module != module || constant.is_exported {
+            continue;
+        }
         if is_ignored(&constant.name) || usage.constants.contains(&id) {
             continue;
         }
@@ -78,9 +90,12 @@ fn constants(analysis: &Analysis, usage: &Usage, found: &mut Found) {
 }
 
 /// Reports bindings nothing reads and `var`s nothing reassigns.
-fn locals(analysis: &Analysis, usage: &Usage, found: &mut Found) {
+fn locals(module: ModuleId, analysis: &Analysis, usage: &Usage, found: &mut Found) {
     for (index, local) in analysis.locals.iter().enumerate() {
         let id = LocalId(index as u32);
+        if analysis.functions[local.function.0 as usize].module != module {
+            continue;
+        }
         // The receiver is bound by the compiler, not written by anyone, so
         // there is no one to tell that it is unused.
         if is_ignored(&local.name) || local.name == noto_semantic::RECEIVER_NAME {
@@ -172,11 +187,17 @@ impl Visitor for Usage<'_> {
                 self.visit_expr(value);
             }
             _ => {
-                // A method call resolves on its callee, which is a member
-                // expression rather than a path: `p.area()` calls `Point.area`
-                // as surely as `area()` would call a free function.
-                if let Some(Resolution::Method(id)) = self.analysis.resolution(expr.id) {
-                    self.called.insert(id);
+                // A call through a member resolves on its callee rather than
+                // on a path: `p.area()` calls a method, `util.double(1)` a
+                // function in another module. Both are calls.
+                match self.analysis.resolution(expr.id) {
+                    Some(Resolution::Method(id)) | Some(Resolution::Function(id)) => {
+                        self.called.insert(id);
+                    }
+                    Some(Resolution::Const(id)) => {
+                        self.constants.insert(id);
+                    }
+                    _ => {}
                 }
                 visit::walk_expr(self, expr)
             }

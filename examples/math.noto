@@ -1,0 +1,80 @@
+// Arithmetic the compiler does not provide as an operator.
+//
+// Every function here is deliberately small: the standard library grows from
+// what a program cannot write for itself, not from what a language could
+// plausibly ship.
+
+/// The distance of `n` from zero.
+export fn abs(n: Int): Int {
+    if n < 0 { return -n }
+    return n
+}
+
+/// The larger of two values.
+export fn max(a: Int, b: Int): Int {
+    if a > b { return a }
+    return b
+}
+
+/// The smaller of two values.
+export fn min(a: Int, b: Int): Int {
+    if a < b { return a }
+    return b
+}
+
+/// `value`, held between `low` and `high` inclusive.
+export fn clamp(value: Int, low: Int, high: Int): Int = min(max(value, low), high)
+
+/// `base` raised to `exponent`, which must not be negative.
+export fn pow(base: Int, exponent: Int): Int {
+    assert(exponent >= 0)
+    var result = 1
+    var remaining = exponent
+    while remaining > 0 {
+        result = result * base
+        remaining -= 1
+    }
+    return result
+}
+
+/// The greatest common divisor of two values, by Euclid's algorithm.
+export fn gcd(a: Int, b: Int): Int {
+    var left = abs(a)
+    var right = abs(b)
+    while right != 0 {
+        val remainder = left % right
+        left = right
+        right = remainder
+    }
+    return left
+}
+
+test "abs folds both signs onto one" {
+    assert(abs(-7) == 7)
+    assert(abs(7) == 7)
+    assert(abs(0) == 0)
+}
+
+test "max and min pick a side" {
+    assert(max(2, 3) == 3)
+    assert(min(2, 3) == 2)
+    assert(max(-1, -5) == -1)
+}
+
+test "clamp holds a value inside its bounds" {
+    assert(clamp(5, 0, 10) == 5)
+    assert(clamp(-3, 0, 10) == 0)
+    assert(clamp(42, 0, 10) == 10)
+}
+
+test "pow multiplies exponent times" {
+    assert(pow(2, 0) == 1)
+    assert(pow(2, 10) == 1024)
+    assert(pow(5, 3) == 125)
+}
+
+test "gcd reduces to the common divisor" {
+    assert(gcd(12, 18) == 6)
+    assert(gcd(-12, 18) == 6)
+    assert(gcd(7, 0) == 7)
+}

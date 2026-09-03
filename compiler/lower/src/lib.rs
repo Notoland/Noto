@@ -34,6 +34,18 @@ use std::collections::HashMap;
 /// The caller must have checked that analysis produced no errors; lowering a
 /// program that failed to type-check is not meaningful.
 pub fn lower(module: &Module, analysis: &Analysis, sink: &mut DiagnosticSink) -> Program {
+    lower_program(std::slice::from_ref(&module), analysis, sink)
+}
+
+/// Lowers every module of a program into one [`Program`].
+///
+/// Functions keep the ids analysis gave them, so a call from one module to
+/// another is the same instruction as a call within one.
+pub fn lower_program(
+    modules: &[&Module],
+    analysis: &Analysis,
+    sink: &mut DiagnosticSink,
+) -> Program {
     let mut program = Program::new();
     let mut function_ids = HashMap::new();
 
@@ -59,7 +71,8 @@ pub fn lower(module: &Module, analysis: &Analysis, sink: &mut DiagnosticSink) ->
 
     program.entry = analysis.entry.and_then(|entry| function_ids.get(&entry).copied());
 
-    let bodies = collect_bodies(module);
+    let bodies: HashMap<NodeId, &noto_ast::Block> =
+        modules.iter().flat_map(|module| collect_bodies(module)).collect();
     for (index, info) in analysis.functions.iter().enumerate() {
         let semantic_id = FunctionId(index as u32);
         let ir_id = function_ids[&semantic_id];
@@ -354,7 +367,7 @@ impl<'a> Builder<'a> {
                 codes::UNSUPPORTED_CONSTRUCT,
                 format!("{what} cannot be compiled to native code yet"),
             )
-            .with_primary(span, "not implemented in Noto 0.3"),
+            .with_primary(span, "not implemented in Noto 0.4"),
         );
         Operand::Const(Const::Unit)
     }

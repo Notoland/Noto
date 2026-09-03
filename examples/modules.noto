@@ -1,0 +1,34 @@
+// A program made of several files. Run it with:
+//
+//     noto run examples/modules.noto
+//
+// `geometry.vector` is read from examples/geometry/vector.noto, and it in
+// turn imports `math` from examples/math.noto.
+
+import geometry.vector
+import math { clamp }
+
+fn main() {
+    val origin = vector.Vector(0, 0)
+    val target = vector.Vector(3, -4)
+
+    val delta = vector.between(origin, target)
+    println("${delta.describe()} is ${delta.manhattan()} steps away")
+    println("the longest single axis is ${delta.chebyshev()}")
+
+    val sum = origin.plus(target)
+    println("${origin.describe()} + ${target.describe()} = ${sum.describe()}")
+    println("clamped: ${clamp(delta.manhattan(), 0, 5)}")
+}
+
+test "a vector adds componentwise" {
+    val sum = vector.Vector(1, 2).plus(vector.Vector(3, 4))
+    assert(sum.x == 4)
+    assert(sum.y == 6)
+}
+
+test "distances use the imported math module" {
+    val delta = vector.between(vector.Vector(1, 1), vector.Vector(4, 5))
+    assert(delta.manhattan() == 7)
+    assert(delta.chebyshev() == 4)
+}

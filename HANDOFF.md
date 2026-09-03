@@ -5,7 +5,7 @@ human or agent. Read this before touching anything.
 
 **Where the project stands:** the compiler is real and works end to end. A
 `.noto` file becomes a static native ELF executable with no LLVM, no libc, and
-no external toolchain. 392 tests pass, 0 fail, no warnings. The whole tool
+no external toolchain. 418 tests pass, 0 fail, no warnings. The whole tool
 set — `run`, `build`, `check`, `test`, `lint`, `fmt` — is implemented, and
 `class` gives the language its first object type.
 
@@ -62,7 +62,7 @@ noto/
 ├── test-runner/      noto-test-runner  `noto test`, one process per test  11 tests
 ├── lsp/              noto-lsp          STUB
 ├── debugger/         noto-debugger     STUB
-├── std/              EMPTY
+├── std/              math.noto — the first module
 ├── docs/             architecture, spec, design notes, RFCs
 ├── examples/         hello.noto, tests.noto, point.noto
 └── tests/            EMPTY
@@ -108,6 +108,8 @@ fn main() {
 - `println`/`print` overloaded on String/Int/Bool, `assert`
 - `test "name" { ... }` declarations are collected, type checked and run by
   `noto test`
+- `import`/`export`: a program is many files, one module each, resolved from
+  the root file's directory
 - `class Point(val x: Int, var y: Int) { fn ... }`: a constructor, field
   reads, field writes, methods and `this`. An object is a reference; every
   field takes a machine word and lives at `index * 8`; a method is a function
@@ -126,7 +128,6 @@ in Noto 0.1`. Nothing is silently accepted and miscompiled.
 | `interface`, `enum` | same | enums need tagged-union layout |
 | generics (`fn f<T>`, `List<T>`) | `collect.rs` `collect_fn`, `resolve_type` | monomorphisation not designed yet |
 | extension functions | `collect.rs` `collect_fn` | receiver resolution missing |
-| `import` / `export` | `collect.rs` | single-file compilation only |
 | floats | `compiler/lower/src/expr.rs` `lower_literal` | needs SSE registers in the backend |
 | `defer` | `compiler/lower/src/stmt.rs` `lower_stmt` | needs scope-exit tracking |
 | safe field access `p?.x`, safe calls `?.f()`, `is`/`as`, `?` propagation, `await`, `unsafe`, lambdas as values, tuples, lists | `check.rs` / `expr.rs` fallthrough arms | |
@@ -231,8 +232,10 @@ handful of intrinsics.
    they promise value semantics and an object is a reference today. A `data
    class` also needs structural equality and a `toString` — an object cannot
    be printed at all right now.
-2. **module system** — `import`/`export`, multi-file compilation. Unblocks the
-   standard library.
+2. **module system** — ~~`import`/`export`, multi-file compilation~~ done.
+   What remains: re-exporting an imported name, visibility between `export`
+   and private, and a package manifest so a program can depend on something
+   it did not copy in.
 3. **enums with associated data** — tagged unions, then pattern matching on
    them, then sealed exhaustiveness (the checker already has the diagnostic:
    `NON_EXHAUSTIVE_WHEN`).
@@ -283,7 +286,7 @@ RFC.
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
-cargo test --workspace          # 392 tests, must stay at 0 failures
+cargo test --workspace          # 418 tests, must stay at 0 failures
 cargo build --workspace
 cargo run -q -p noto-driver --example emit -- examples/hello.noto /tmp/hello && /tmp/hello
 ```

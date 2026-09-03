@@ -10,6 +10,7 @@ authors.workspace = true
 
 [dependencies]
 noto-diagnostics.workspace = true
+noto-span.workspace = true
 noto-ir.workspace = true
 noto-codegen.workspace = true
 noto-runtime.workspace = true

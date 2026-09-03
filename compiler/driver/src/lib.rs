@@ -17,9 +17,12 @@
 
 #![deny(missing_docs)]
 
+mod modules;
 mod pipeline;
 
-pub use pipeline::{compile, compile_source, CompileOptions, Compilation, Stage};
+pub use modules::{load, LoadedModule, Program};
+pub use noto_semantic::{Import, ModuleId};
+pub use pipeline::{compile, compile_path, compile_source, CompileOptions, Compilation, Stage};
 
 use noto_diagnostics::{codes, Diagnostic, DiagnosticSink, RenderStyle};
 use noto_span::SourceMap;

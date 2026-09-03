@@ -6,7 +6,7 @@
 
 use noto_codegen::EXECUTABLE_MODE;
 use noto_diagnostics::RenderStyle;
-use noto_driver::{compile, read_source, summary, CompileOptions, Stage};
+use noto_driver::{compile_path, read_source, summary, CompileOptions, Stage};
 use noto_test_runner::TestOptions;
 use noto_span::SourceMap;
 use std::io::IsTerminal;
@@ -201,10 +201,6 @@ fn run(command: Command) -> ExitCode {
 
     let mut map = SourceMap::new();
     let mut sink = noto_diagnostics::DiagnosticSink::new();
-    let Some(file) = read_source(&mut map, input, &mut sink) else {
-        report(&map, &sink);
-        return ExitCode::FAILURE;
-    };
 
     let options = CompileOptions {
         stage,
@@ -213,13 +209,13 @@ fn run(command: Command) -> ExitCode {
         allow_no_main: matches!(command, Command::Test { .. } | Command::Lint { .. }),
         ..CompileOptions::default()
     };
-    let result = compile(&map, file, &options, &mut sink);
+    let result = compile_path(&mut map, input, &options, &mut sink);
 
     // The linter is a phase like any other: it pushes into the same sink, so
     // its warnings are rendered and counted with everything else.
     if matches!(command, Command::Lint { .. }) {
-        if let (Some(module), Some(analysis)) = (&result.module, &result.analysis) {
-            noto_linter::lint(module, analysis, &mut sink);
+        if let (Some(module), Some(analysis)) = (result.module(), &result.analysis) {
+            noto_linter::lint_module(module, result.root_imports(), analysis, &mut sink);
         }
     }
 
@@ -287,6 +283,9 @@ fn run(command: Command) -> ExitCode {
             };
             let options = TestOptions {
                 filter,
+                // `noto test app.noto` runs app's tests; an imported
+                // module's are run by pointing at that module.
+                file: result.root_file,
                 ..TestOptions::default()
             };
             let report = noto_test_runner::run(&mut program, &options);

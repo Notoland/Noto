@@ -16,21 +16,19 @@ impl Checker<'_> {
         for item in &module.items {
             match &item.kind {
                 ItemKind::Fn(function) => {
-                    let Some(id) = self.function_id_for(&function.name.name) else { continue };
                     let Some(body) = &function.body else { continue };
+                    let Some(id) = self.function_with_body(body.id) else { continue };
                     self.check_function_body(id, function, body);
                 }
                 ItemKind::Test(test) => {
-                    let name = format!("test${}", test.name);
-                    let Some(id) = self.function_id_for(&name) else { continue };
+                    let Some(id) = self.function_with_body(test.body.id) else { continue };
                     self.check_test_body(id, &test.body);
                 }
                 ItemKind::TypeDecl(decl) => {
                     for method in &decl.methods {
                         let ItemKind::Fn(function) = &method.kind else { continue };
-                        let name = format!("{}.{}", decl.name.name, function.name.name);
-                        let Some(id) = self.function_id_for(&name) else { continue };
                         let Some(body) = &function.body else { continue };
+                        let Some(id) = self.function_with_body(body.id) else { continue };
                         self.check_function_body(id, function, body);
                     }
                 }
@@ -44,10 +42,15 @@ impl Checker<'_> {
         }
     }
 
-    fn function_id_for(&self, name: &str) -> Option<FunctionId> {
+    /// Finds the function whose body is this block.
+    ///
+    /// Looking it up by name would be ambiguous once a program is many
+    /// modules: two modules may each declare a `helper`. A body's node id
+    /// belongs to one declaration in one file and to nothing else.
+    fn function_with_body(&self, body: noto_ast::NodeId) -> Option<FunctionId> {
         self.functions
             .iter()
-            .position(|function| function.name == name)
+            .position(|function| function.body == Some(body))
             .map(|index| FunctionId(index as u32))
     }
 
@@ -183,7 +186,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "declarations inside a function body are not supported yet",
                     )
-                    .with_primary(stmt.span, "not implemented in Noto 0.3")
+                    .with_primary(stmt.span, "not implemented in Noto 0.4")
                     .with_help("move the declaration to the top level of the file"),
                 );
                 self.store.unit()
@@ -267,7 +270,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this pattern is not supported in a binding yet",
                     )
-                    .with_primary(pattern.span, "not implemented in Noto 0.3")
+                    .with_primary(pattern.span, "not implemented in Noto 0.4")
                     .with_help("bind a name, a tuple of names, or `_`"),
                 );
             }
@@ -288,7 +291,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         format!("cannot iterate over a `{rendered}` yet"),
                     )
-                    .with_primary(iterable.span, "not iterable in Noto 0.3")
+                    .with_primary(iterable.span, "not iterable in Noto 0.4")
                     .with_help("iterate over a range, as in `for i in 0..10`"),
                 );
                 self.store.error()
@@ -359,7 +362,7 @@ impl Checker<'_> {
                     let ty = self.check_expr_expecting(bound, int);
                     self.expect_assignable(ty, int, bound.span, None);
                 }
-                // Ranges exist only inside `for` and `when` in Noto 0.3; there
+                // Ranges exist only inside `for` and `when` in Noto 0.4; there
                 // is no first-class `Range` type to give them yet.
                 self.store.unit()
             }
@@ -377,7 +380,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this expression is not supported by this compiler yet",
                     )
-                    .with_primary(expr.span, "not implemented in Noto 0.3"),
+                    .with_primary(expr.span, "not implemented in Noto 0.4"),
                 );
                 self.store.error()
             }
@@ -484,7 +487,7 @@ impl Checker<'_> {
 
     fn check_path(&mut self, expr: &Expr, path: &noto_ast::Path) -> TypeId {
         let name = path.to_dotted();
-        match self.scopes.lookup(&name) {
+        match self.lookup_value(&name) {
             Some(Resolution::Local(local)) => {
                 self.record_resolution(expr.id, Resolution::Local(local));
                 self.locals[local.0 as usize].ty
@@ -689,7 +692,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "`in` is not supported outside a `when` arm yet",
                     )
-                    .with_primary(span, "not implemented in Noto 0.3"),
+                    .with_primary(span, "not implemented in Noto 0.4"),
                 );
                 bool_ty
             }
@@ -1048,7 +1051,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this pattern is not supported by this compiler yet",
                     )
-                    .with_primary(pattern.span, "not implemented in Noto 0.3"),
+                    .with_primary(pattern.span, "not implemented in Noto 0.4"),
                 );
             }
         }
@@ -1111,7 +1114,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "explicit type arguments are not supported by this compiler yet",
                 )
-                .with_primary(expr.span, "not implemented in Noto 0.3"),
+                .with_primary(expr.span, "not implemented in Noto 0.4"),
             );
         }
 
@@ -1122,7 +1125,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "named arguments are not supported by this compiler yet",
                     )
-                    .with_primary(name.span, "not implemented in Noto 0.3")
+                    .with_primary(name.span, "not implemented in Noto 0.4")
                     .with_help("pass the arguments positionally"),
                 );
             }
@@ -1132,7 +1135,7 @@ impl Checker<'_> {
         // argument types rather than by scope.
         if let ExprKind::Path(path) = &call.callee.kind {
             let name = path.to_dotted();
-            if self.scopes.lookup(&name).is_none() {
+            if self.lookup_value(&name).is_none() {
                 let overloads = builtins::free_overloads(&name);
                 if !overloads.is_empty() {
                     return self.check_builtin_call(expr, call, &name, &overloads);
@@ -1142,8 +1145,25 @@ impl Checker<'_> {
 
         // A call of a class name constructs one: `Point(1, 2)`.
         if let ExprKind::Path(path) = &call.callee.kind {
-            if let Some(Resolution::Class(id)) = self.scopes.lookup(&path.to_dotted()) {
+            if let Some(Resolution::Class(id)) = self.lookup_value(&path.to_dotted()) {
                 return self.check_construction(expr, call, id);
+            }
+        }
+
+        // A qualified call through an imported namespace: `point.distance(1)`.
+        if let ExprKind::Member { receiver, name, safe } = &call.callee.kind {
+            if let Some(module) = self.receiver_module(receiver) {
+                if *safe {
+                    self.sink.emit(
+                        Diagnostic::error(
+                            codes::UNSUPPORTED_CONSTRUCT,
+                            "a module is not a value, so `?.` means nothing here",
+                        )
+                        .with_primary(call.callee.span, "use `.`"),
+                    );
+                    return self.store.error();
+                }
+                return self.check_qualified_call(expr, call, module, name);
             }
         }
 
@@ -1156,7 +1176,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "safe calls are not supported by this compiler yet",
                     )
-                    .with_primary(expr.span, "not implemented in Noto 0.3"),
+                    .with_primary(expr.span, "not implemented in Noto 0.4"),
                 );
                 return self.store.error();
             }
@@ -1249,6 +1269,129 @@ impl Checker<'_> {
         result
     }
 
+    /// Checks the arguments of a call to a known function.
+    fn check_function_arguments(
+        &mut self,
+        expr: &Expr,
+        call: &noto_ast::CallExpr,
+        function: FunctionId,
+    ) -> TypeId {
+        let info = &self.functions[function.0 as usize];
+        let (name, result) = (info.name.clone(), info.result);
+        let expected: Vec<TypeId> =
+            info.parameters.iter().map(|local| self.locals[local.0 as usize].ty).collect();
+
+        self.check_argument_count(expr.span, call.arguments.len(), expected.len(), &name);
+
+        for (argument, expected) in call.arguments.iter().zip(&expected) {
+            let found = self.check_expr_expecting(&argument.value, *expected);
+            self.expect_assignable(found, *expected, argument.value.span, None);
+        }
+        for argument in call.arguments.iter().skip(expected.len()) {
+            self.check_expr(&argument.value);
+        }
+
+        self.record_type(call.callee.id, result);
+        result
+    }
+
+    /// The module a receiver expression names, if it names one.
+    ///
+    /// Only a bare name can be a namespace: a module is not a value, so it
+    /// cannot come out of a call or a field.
+    fn receiver_module(&mut self, receiver: &Expr) -> Option<crate::ModuleId> {
+        let ExprKind::Path(path) = &receiver.kind else { return None };
+        match self.lookup_value(&path.to_dotted()) {
+            Some(Resolution::Module(id)) => {
+                // Recorded so that tooling — the unused-import lint, a
+                // language server's go-to-definition — can see which import a
+                // qualified name went through.
+                self.record_resolution(receiver.id, Resolution::Module(id));
+                Some(id)
+            }
+            _ => None,
+        }
+    }
+
+    /// Checks `module.name` used as a value.
+    fn check_qualified_name(
+        &mut self,
+        expr: &Expr,
+        module: crate::ModuleId,
+        name: &noto_ast::Ident,
+    ) -> TypeId {
+        match self.export_value(module, &name.name) {
+            Some(Resolution::Const(id)) => {
+                self.record_resolution(expr.id, Resolution::Const(id));
+                self.constants[id.0 as usize].ty
+            }
+            Some(Resolution::Function(id)) => {
+                self.record_resolution(expr.id, Resolution::Function(id));
+                let info = &self.functions[id.0 as usize];
+                let parameters: Vec<TypeId> =
+                    info.parameters.iter().map(|local| self.locals[local.0 as usize].ty).collect();
+                let (result, is_async) = (info.result, info.is_async);
+                self.store.intern(Type::Function { parameters, result, is_async })
+            }
+            _ => {
+                self.report_missing_export(module, name);
+                self.store.error()
+            }
+        }
+    }
+
+    /// Checks `module.name(...)`.
+    fn check_qualified_call(
+        &mut self,
+        expr: &Expr,
+        call: &noto_ast::CallExpr,
+        module: crate::ModuleId,
+        name: &noto_ast::Ident,
+    ) -> TypeId {
+        match self.export_value(module, &name.name) {
+            Some(Resolution::Class(id)) => {
+                self.record_resolution(call.callee.id, Resolution::Class(id));
+                self.check_construction_of(expr, call, id)
+            }
+            Some(Resolution::Function(id)) => {
+                self.record_resolution(call.callee.id, Resolution::Function(id));
+                self.check_function_arguments(expr, call, id)
+            }
+            _ => {
+                for argument in &call.arguments {
+                    self.check_expr(&argument.value);
+                }
+                self.report_missing_export(module, name);
+                self.store.error()
+            }
+        }
+    }
+
+    /// Reports a name a module does not export, saying which of the two
+    /// reasons it is: it is not there, or it is not exported.
+    fn report_missing_export(&mut self, module: crate::ModuleId, name: &noto_ast::Ident) {
+        let index = module.0 as usize;
+        let path = self.modules[index].clone();
+        let declared = self.module_names[index].contains_key(&name.name)
+            || self.module_types[index].contains_key(&name.name);
+
+        let diagnostic = if declared {
+            Diagnostic::error(
+                codes::UNKNOWN_NAME,
+                format!("`{}` is private to `{path}`", name.name),
+            )
+            .with_primary(name.span, "declared there, but not exported")
+            .with_help(format!("write `export` on its declaration in `{path}`"))
+        } else {
+            Diagnostic::error(
+                codes::UNKNOWN_NAME,
+                format!("`{path}` declares no `{}`", name.name),
+            )
+            .with_primary(name.span, "not declared there")
+        };
+        self.sink.emit(diagnostic);
+    }
+
     /// Checks the arguments of `receiver.method(...)`.
     ///
     /// The receiver is already checked and occupies the first parameter, so
@@ -1317,6 +1460,16 @@ impl Checker<'_> {
         id: crate::analysis::ClassId,
     ) -> TypeId {
         self.record_resolution(call.callee.id, Resolution::Class(id));
+        self.check_construction_of(expr, call, id)
+    }
+
+    /// Checks a construction whose callee is already resolved.
+    fn check_construction_of(
+        &mut self,
+        expr: &Expr,
+        call: &noto_ast::CallExpr,
+        id: crate::analysis::ClassId,
+    ) -> TypeId {
         self.record_resolution(expr.id, Resolution::Class(id));
 
         let class = &self.classes[id.0 as usize];
@@ -1433,6 +1586,12 @@ impl Checker<'_> {
         name: &noto_ast::Ident,
         safe: bool,
     ) -> TypeId {
+        // `util.LIMIT` reads through an imported namespace rather than
+        // through a value, so the receiver is never evaluated.
+        if let Some(module) = self.receiver_module(receiver) {
+            return self.check_qualified_name(expr, module, name);
+        }
+
         let receiver_ty = self.check_expr(receiver);
         let base = self.store.unwrap_nullable(receiver_ty);
 
@@ -1484,7 +1643,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "safe field access is not supported by this compiler yet",
                     )
-                    .with_primary(expr.span, "not implemented in Noto 0.3"),
+                    .with_primary(expr.span, "not implemented in Noto 0.4"),
                 );
                 return self.store.error();
             }

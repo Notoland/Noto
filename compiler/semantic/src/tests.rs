@@ -700,6 +700,239 @@ fn a_method_cannot_assign_to_a_val_field() {
     );
 }
 
+// --- modules ---------------------------------------------------------------
+
+/// Analyses a program of several modules. The first is the root, and each
+/// entry is `(name, source, imports)` where an import is
+/// `(module index, binding, selected names)`.
+fn check_program(
+    modules: &[(&str, &str, &[(usize, Option<&str>, &[&str])])],
+) -> (Analysis, Vec<String>) {
+    let mut map = SourceMap::new();
+    let mut sink = DiagnosticSink::new();
+
+    let mut asts = Vec::new();
+    let mut next = noto_ast::NodeId(0);
+    for (name, source, _) in modules {
+        let file = map.add(format!("{name}.noto"), *source);
+        let (ast, after) =
+            noto_parser::parse_file_from(map.file(file).unwrap(), next, &mut sink);
+        next = after;
+        asts.push(ast);
+    }
+
+    let imports: Vec<Vec<crate::Import>> = modules
+        .iter()
+        .map(|(_, _, imports)| {
+            imports
+                .iter()
+                .map(|(target, binding, names)| crate::Import {
+                    module: ModuleId(*target as u32),
+                    path: modules[*target].0.to_string(),
+                    binding: binding.map(str::to_string),
+                    names: names
+                        .iter()
+                        .map(|name| noto_ast::Ident {
+                            name: name.to_string(),
+                            span: noto_span::Span::dummy(),
+                        })
+                        .collect(),
+                    span: noto_span::Span::dummy(),
+                })
+                .collect()
+        })
+        .collect();
+
+    let inputs: Vec<crate::ModuleInput> = modules
+        .iter()
+        .enumerate()
+        .map(|(index, (name, _, _))| crate::ModuleInput {
+            name: if index == 0 { "" } else { name },
+            ast: &asts[index],
+            imports: &imports[index],
+        })
+        .collect();
+
+    let analysis = crate::analyze_program(&inputs, &mut sink);
+    let messages = sink.diagnostics().iter().map(|d| d.message.clone()).collect();
+    (analysis, messages)
+}
+
+fn program_ok(modules: &[(&str, &str, &[(usize, Option<&str>, &[&str])])]) -> Analysis {
+    let (analysis, messages) = check_program(modules);
+    assert!(messages.is_empty(), "unexpected diagnostics: {messages:?}");
+    analysis
+}
+
+fn program_error(
+    modules: &[(&str, &str, &[(usize, Option<&str>, &[&str])])],
+    needle: &str,
+) {
+    let (_, messages) = check_program(modules);
+    assert!(
+        messages.iter().any(|message| message.contains(needle)),
+        "expected an error containing {needle:?}, got {messages:?}"
+    );
+}
+
+#[test]
+fn a_qualified_call_reaches_an_exported_function() {
+    program_ok(&[
+        ("main", "fn main() {\n    println(util.double(21))\n}\n", &[(1, Some("util"), &[])]),
+        ("util", "export fn double(n: Int): Int = n * 2\n", &[]),
+    ]);
+}
+
+#[test]
+fn a_selective_import_binds_the_name_unqualified() {
+    program_ok(&[
+        ("main", "fn main() {\n    println(double(21))\n}\n", &[(1, None, &["double"])]),
+        ("util", "export fn double(n: Int): Int = n * 2\n", &[]),
+    ]);
+}
+
+#[test]
+fn a_private_function_cannot_be_reached() {
+    program_error(
+        &[
+            ("main", "fn main() {\n    println(util.secret())\n}\n", &[(1, Some("util"), &[])]),
+            ("util", "fn secret(): Int = 42\n", &[]),
+        ],
+        "`secret` is private to `util`",
+    );
+}
+
+#[test]
+fn a_name_a_module_does_not_declare_is_told_apart_from_a_private_one() {
+    program_error(
+        &[
+            ("main", "fn main() {\n    println(util.missing())\n}\n", &[(1, Some("util"), &[])]),
+            ("util", "fn secret(): Int = 42\n", &[]),
+        ],
+        "`util` declares no `missing`",
+    );
+}
+
+#[test]
+fn a_selective_import_of_a_private_name_says_which_keyword_is_missing() {
+    program_error(
+        &[
+            ("main", "fn main() {}\n", &[(1, None, &["secret"])]),
+            ("util", "fn secret(): Int = 42\n", &[]),
+        ],
+        "`secret` is private to `util`",
+    );
+}
+
+#[test]
+fn a_selective_import_of_a_name_that_is_not_there_lists_the_exports() {
+    let (_, messages) = check_program(&[
+        ("main", "fn main() {}\n", &[(1, None, &["tripled"])]),
+        ("util", "export fn double(n: Int): Int = n\nexport const LIMIT: Int = 1\n", &[]),
+    ]);
+    assert!(messages.iter().any(|m| m.contains("declares no `tripled`")), "{messages:?}");
+}
+
+#[test]
+fn an_exported_class_can_be_named_and_constructed_qualified() {
+    program_ok(&[
+        (
+            "main",
+            "fn main() {\n    val p: geo.Point = geo.Point(1, 2)\n    println(p.x)\n}\n",
+            &[(1, Some("geo"), &[])],
+        ),
+        ("geometry", "export class Point(val x: Int, val y: Int)\n", &[]),
+    ]);
+}
+
+#[test]
+fn a_method_of_an_imported_class_is_callable() {
+    program_ok(&[
+        (
+            "main",
+            "fn main() {\n    println(geo.Point(3, 4).sum())\n}\n",
+            &[(1, Some("geo"), &[])],
+        ),
+        (
+            "geometry",
+            "export class Point(val x: Int, val y: Int) {\n                 export fn sum(): Int = this.x + this.y\n             }\n",
+            &[],
+        ),
+    ]);
+}
+
+#[test]
+fn two_modules_may_each_declare_the_same_name() {
+    let analysis = program_ok(&[
+        ("main", "fn helper(): Int = 1\nfn main() {\n    println(helper())\n}\n", &[]),
+        ("util", "export fn helper(): Int = 2\n", &[]),
+    ]);
+    assert_eq!(
+        analysis.functions.iter().filter(|f| f.name == "helper").count(),
+        2,
+        "each module keeps its own"
+    );
+}
+
+#[test]
+fn a_modules_own_declaration_wins_over_an_imported_one() {
+    // Both modules declare `helper`. The unqualified call is this module's;
+    // reaching the other one takes the namespace.
+    let analysis = program_ok(&[
+        (
+            "main",
+            "fn helper(): Int = 1\nfn main() {\n    println(helper() + util.helper())\n}\n",
+            &[(1, Some("util"), &[])],
+        ),
+        ("util", "export fn helper(): Int = 2\n", &[]),
+    ]);
+    assert_eq!(analysis.functions.iter().filter(|f| f.name == "helper").count(), 2);
+}
+
+#[test]
+fn an_import_may_not_bind_a_name_the_module_declares() {
+    program_error(
+        &[
+            ("main", "fn helper(): Int = 1\nfn main() {}\n", &[(1, None, &["helper"])]),
+            ("util", "export fn helper(): Int = 2\n", &[]),
+        ],
+        "already declared in this module",
+    );
+}
+
+#[test]
+fn two_imports_may_not_bind_the_same_name() {
+    program_error(
+        &[
+            ("main", "fn main() {}\n", &[(1, Some("util"), &[]), (2, Some("util"), &[])]),
+            ("one", "export fn a(): Int = 1\n", &[]),
+            ("two", "export fn b(): Int = 2\n", &[]),
+        ],
+        "bound by two imports",
+    );
+}
+
+#[test]
+fn only_the_root_module_declares_the_entry_point() {
+    let analysis = program_ok(&[
+        ("main", "fn main() {\n    println(1)\n}\n", &[(1, Some("util"), &[])]),
+        ("util", "export fn main(): Int = 2\n", &[]),
+    ]);
+    let entry = analysis.entry.expect("the root has one");
+    assert_eq!(analysis.functions[entry.0 as usize].module, ModuleId::ROOT);
+}
+
+#[test]
+fn a_type_error_in_an_imported_module_is_reported() {
+    program_error(
+        &[
+            ("main", "fn main() {}\n", &[(1, Some("util"), &[])]),
+            ("util", "export fn broken(): Int = \"text\"\n", &[]),
+        ],
+        "must produce a `Int`",
+    );
+}
+
 // --- tests -----------------------------------------------------------------
 
 #[test]

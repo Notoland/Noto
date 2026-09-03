@@ -2,6 +2,7 @@
 
 use noto_ast::Module;
 use noto_codegen::Target;
+use noto_semantic::ModuleInput;
 use noto_diagnostics::{codes, Diagnostic, DiagnosticSink};
 use noto_ir::Program;
 use noto_semantic::Analysis;
@@ -56,8 +57,12 @@ impl Default for CompileOptions {
 /// succeeded, so a caller can tell how far compilation got.
 #[derive(Default)]
 pub struct Compilation {
-    /// The parsed module.
-    pub module: Option<Module>,
+    /// Every parsed module, the root first.
+    pub modules: Vec<Module>,
+    /// What each module imports, in the same order.
+    pub imports: Vec<Vec<noto_semantic::Import>>,
+    /// The file the root module was read from.
+    pub root_file: Option<FileId>,
     /// What analysis learned.
     pub analysis: Option<Analysis>,
     /// The lowered program.
@@ -71,6 +76,109 @@ impl Compilation {
     pub fn is_complete(&self) -> bool {
         self.executable.is_some()
     }
+
+    /// The root module: the file the compiler was pointed at.
+    pub fn module(&self) -> Option<&Module> {
+        self.modules.first()
+    }
+
+    /// What the root module imports.
+    pub fn root_imports(&self) -> &[noto_semantic::Import] {
+        self.imports.first().map(Vec::as_slice).unwrap_or(&[])
+    }
+}
+
+/// Compiles a program: the file at `root` and everything it imports.
+///
+/// This is what every command but `noto fmt` runs. Imports are resolved
+/// first, so a missing module or a cycle is reported before anything is
+/// checked; then the whole program is analysed at once, because a call may
+/// cross a module boundary in either direction.
+pub fn compile_path(
+    map: &mut SourceMap,
+    root: &std::path::Path,
+    options: &CompileOptions,
+    sink: &mut DiagnosticSink,
+) -> Compilation {
+    let mut result = Compilation::default();
+    let Some(loaded) = crate::modules::load(map, root, sink) else { return result };
+
+    result.imports =
+        loaded.modules.iter().map(|module| module.imports.clone()).collect();
+    result.root_file = loaded.modules.first().map(|module| module.file);
+
+    let stop = options.stage == Stage::Parse || sink.has_errors();
+    if stop {
+        result.modules = loaded.modules.into_iter().map(|module| module.ast).collect();
+        return result;
+    }
+
+    let inputs: Vec<ModuleInput> = loaded
+        .modules
+        .iter()
+        .map(|module| ModuleInput {
+            name: &module.name,
+            ast: &module.ast,
+            imports: &module.imports,
+        })
+        .collect();
+    let analysis = noto_semantic::analyze_program(&inputs, sink);
+    drop(inputs);
+
+    let root_name = loaded.modules[0].file;
+    check_entry(&analysis, map, root_name, options, sink);
+
+    if options.stage == Stage::Check || sink.has_errors() {
+        result.modules = loaded.modules.into_iter().map(|module| module.ast).collect();
+        result.analysis = Some(analysis);
+        return result;
+    }
+
+    let asts: Vec<&Module> = loaded.modules.iter().map(|module| &module.ast).collect();
+    let mut program = noto_lower::lower_program(&asts, &analysis, sink);
+    drop(asts);
+    result.modules = loaded.modules.into_iter().map(|module| module.ast).collect();
+    result.analysis = Some(analysis);
+
+    if sink.has_errors() {
+        result.ir = Some(program);
+        return result;
+    }
+
+    if options.optimize {
+        noto_optimizer::optimize(&mut program);
+    }
+    result.ir = Some(program);
+    if options.stage == Stage::Ir {
+        return result;
+    }
+
+    let program = result.ir.as_ref().expect("just set");
+    match noto_codegen::compile(program, options.target) {
+        Ok(executable) => result.executable = Some(executable),
+        Err(error) => sink.emit(error.to_diagnostic()),
+    }
+
+    result
+}
+
+/// Reports a program that cannot be run because it has no entry point.
+fn check_entry(
+    analysis: &noto_semantic::Analysis,
+    map: &SourceMap,
+    file: FileId,
+    options: &CompileOptions,
+    sink: &mut DiagnosticSink,
+) {
+    if options.stage < Stage::Ir || analysis.entry.is_some() || options.allow_no_main {
+        return;
+    }
+    let name = map.file(file).map(|file| file.name().to_string()).unwrap_or_default();
+    sink.emit(
+        Diagnostic::error(codes::NO_MAIN, "this program has no `main` function")
+            .with_note(format!("`{name}` declares no entry point"))
+            .with_help("add `fn main() { ... }`"),
+    );
 }
 
 /// Compiles one already-loaded source file.
@@ -89,12 +197,14 @@ pub fn compile(
 
     let module = noto_parser::parse_file(source, sink);
     let stop = options.stage == Stage::Parse || sink.has_errors();
-    result.module = Some(module);
+    result.modules = vec![module];
+    result.imports = vec![Vec::new()];
+    result.root_file = Some(file);
     if stop {
         return result;
     }
 
-    let module = result.module.as_ref().expect("just set");
+    let module = result.modules.first().expect("just set");
     let analysis = noto_semantic::analyze(module, sink);
 
     // A program without `main` cannot be run, but it can still be checked, so
@@ -113,6 +223,7 @@ pub fn compile(
     }
 
     let analysis = result.analysis.as_ref().expect("just set");
+    let module = result.modules.first().expect("parsed above");
     let mut program = noto_lower::lower(module, analysis, sink);
     if sink.has_errors() {
         result.ir = Some(program);

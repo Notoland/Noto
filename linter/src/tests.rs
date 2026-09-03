@@ -18,7 +18,7 @@ fn lints(source: &str) -> Vec<Diagnostic> {
     let (_, compilation) = compile_source("lint.noto", source, &options, &mut sink);
     assert!(!sink.has_errors(), "the source must compile: {:?}", sink.diagnostics());
 
-    let module = compilation.module.expect("parsed");
+    let module = compilation.modules.into_iter().next().expect("parsed");
     let analysis = compilation.analysis.expect("analysed");
     let mut sink = DiagnosticSink::new();
     lint(&module, &analysis, &mut sink);
@@ -110,7 +110,7 @@ fn unreachable_code_is_left_to_the_type_checker() {
 
     let mut lints = DiagnosticSink::new();
     lint(
-        &compilation.module.expect("parsed"),
+        &compilation.modules.into_iter().next().expect("parsed"),
         &compilation.analysis.expect("analysed"),
         &mut lints,
     );
@@ -188,6 +188,16 @@ fn the_receiver_is_never_reported_as_unused() {
     // Nobody wrote `this`, so there is nobody to tell that it is unused.
     assert!(codes_of(
         "class Rect(val side: Int) {\n    fn constant(): Int = 1\n}\n         fn main() {\n    println(Rect(1).constant())\n}\n"
+    )
+    .is_empty());
+}
+
+#[test]
+fn an_exported_declaration_is_never_dead_code() {
+    // What calls an export is by definition in another module, which this
+    // walk does not see.
+    assert!(codes_of(
+        "export fn surface(): Int = 1\nexport const LIMIT: Int = 2\n         export class Thing(val n: Int)\nfn main() {\n    println(3)\n}\n"
     )
     .is_empty());
 }

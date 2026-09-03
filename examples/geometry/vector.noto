@@ -1,0 +1,16 @@
+// A module imported by examples/modules.noto.
+
+import math { abs, max }
+
+export class Vector(val x: Int, val y: Int) {
+    export fn manhattan(): Int = abs(this.x) + abs(this.y)
+
+    export fn chebyshev(): Int = max(abs(this.x), abs(this.y))
+
+    export fn plus(other: Vector): Vector = Vector(this.x + other.x, this.y + other.y)
+
+    export fn describe(): String = "(${this.x}, ${this.y})"
+}
+
+/// The vector from `from` to `to`.
+export fn between(from: Vector, to: Vector): Vector = Vector(to.x - from.x, to.y - from.y)

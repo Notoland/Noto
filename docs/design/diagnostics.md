@@ -22,7 +22,7 @@ module must agree.**
 
 | Range | Phase | Examples |
 |---|---|---|
-| `0001`–`0003` | driver, file level | `CANNOT_READ_FILE`, `NO_MAIN`, `BAD_EXTENSION` |
+| `0001`–`0004` | driver, file level | `CANNOT_READ_FILE`, `NO_MAIN`, `BAD_EXTENSION`, `IMPORT_CYCLE` |
 | `01xx` | lexer | `UNTERMINATED_STRING`, `INVALID_ESCAPE`, `INVALID_NUMBER`, `UNTERMINATED_INTERPOLATION` |
 | `02xx` | parser | `UNEXPECTED_TOKEN`, `INVALID_MODIFIER`, `MALFORMED_WHEN` |
 | `03xx` | semantic, names | `UNKNOWN_NAME`, `DUPLICATE_NAME`, `REASSIGNED_VAL`, `OUTSIDE_LOOP`, `USED_BEFORE_INIT` |

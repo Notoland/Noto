@@ -28,6 +28,7 @@ pub use report::{Outcome, Report, TestResult};
 
 use noto_codegen::{Target, EXECUTABLE_MODE};
 use noto_ir::{FuncId, Program};
+use noto_span::FileId;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -42,6 +43,13 @@ pub const TEST_PREFIX: &str = "test$";
 pub struct TestOptions {
     /// Only run tests whose name contains this text.
     pub filter: Option<String>,
+    /// Only run tests declared in this file.
+    ///
+    /// A program is many modules, and `noto test app.noto` means app's
+    /// tests: an imported module's are run by pointing at that module. A
+    /// test's name is only its description, so a failure from a module the
+    /// user did not name would be a line with nothing to attribute it to.
+    pub file: Option<FileId>,
     /// What to generate the per-test executables for.
     pub target: Target,
     /// Where the per-test executables are written.
@@ -52,6 +60,7 @@ impl Default for TestOptions {
     fn default() -> Self {
         TestOptions {
             filter: None,
+            file: None,
             target: Target::host(),
             directory: std::env::temp_dir(),
         }
@@ -100,6 +109,10 @@ pub fn run(program: &mut Program, options: &TestOptions) -> Report {
     let tests: Vec<Test> = discover(program)
         .into_iter()
         .filter(|test| selects(options.filter.as_deref(), &test.name))
+        .filter(|test| match options.file {
+            Some(file) => program.function(test.function).span.file == file,
+            None => true,
+        })
         .collect();
 
     // Every run gets its own directory. Two runs in one process would

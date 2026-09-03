@@ -15,18 +15,20 @@ use noto_types::{Primitive, Type, TypeId};
 
 impl Checker<'_> {
     /// Records the signature of every top-level declaration.
-    pub(crate) fn collect_items(&mut self, module: &Module) {
-        self.scopes.push();
-
-        // Class names are registered before anything else is collected, so a
-        // field, a parameter or a result type can name a class declared
-        // further down the file.
+    /// Registers every class name in one module.
+    ///
+    /// This runs for every module before any signature is collected, so a
+    /// field, a parameter or a result type can name a class declared further
+    /// down the file or in another module entirely.
+    pub(crate) fn declare_classes(&mut self, module: &Module) {
         for item in &module.items {
             if let ItemKind::TypeDecl(decl) = &item.kind {
                 self.declare_class(item, decl);
             }
         }
+    }
 
+    pub(crate) fn collect_items(&mut self, module: &Module) {
         for item in &module.items {
             match &item.kind {
                 ItemKind::Fn(function) => self.collect_fn(item, function),
@@ -37,13 +39,11 @@ impl Checker<'_> {
                 // given semantics; `noto check` reports them rather than
                 // silently accepting a program it cannot compile.
                 ItemKind::Interface(_) | ItemKind::Enum(_) => self.report_unsupported(item),
-                ItemKind::Import(_) => self.report_unsupported(item),
+                // Imports are resolved by the driver and checked separately;
+                // there is no signature to collect from one.
+                ItemKind::Import(_) => {}
                 ItemKind::Error => {}
             }
-        }
-
-        if let Some(entry) = self.entry {
-            self.check_entry_signature(entry);
         }
     }
 
@@ -60,7 +60,7 @@ impl Checker<'_> {
                 codes::UNSUPPORTED_CONSTRUCT,
                 format!("{what} are not supported by this compiler yet"),
             )
-            .with_primary(span, "not implemented in Noto 0.3")
+            .with_primary(span, "not implemented in Noto 0.4")
         };
 
         if decl.class_kind != ClassKind::Class {
@@ -69,7 +69,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     format!("`{}` declarations are not supported by this compiler yet", decl.class_kind.as_str()),
                 )
-                .with_primary(item.span, "not implemented in Noto 0.3")
+                .with_primary(item.span, "not implemented in Noto 0.4")
                 .with_note("a value type is copied on assignment, which needs the memory model")
                 .with_help("declare it as a `class` for now: an object is a reference"),
             );
@@ -97,7 +97,7 @@ impl Checker<'_> {
         }
 
         let name = decl.name.name.clone();
-        if let Some(existing) = self.class_names.get(&name).copied() {
+        if let Some(existing) = self.own_type(&name) {
             let previous = self.classes[existing.0 as usize].span;
             self.sink.emit(
                 Diagnostic::error(
@@ -111,24 +111,32 @@ impl Checker<'_> {
         }
 
         let id = ClassId(self.classes.len() as u32);
-        let def = self.store.declare(name.clone());
+        let qualified = self.qualify(&name);
+        let def = self.store.declare(qualified);
         let ty = self.store.intern(Type::Named { def, arguments: Vec::new() });
         self.classes.push(ClassInfo {
             name: name.clone(),
+            module: self.current_module,
+            is_exported: item.modifiers.is_exported,
             fields: Vec::new(),
             methods: Vec::new(),
             ty,
             def,
             span: item.span,
         });
-        self.class_names.insert(name.clone(), id);
-        // The name is also a value: it is the constructor.
-        self.scopes.declare(name, Resolution::Class(id));
+        let module = self.current_module.0 as usize;
+        self.module_types[module].insert(name.clone(), id);
+        if item.modifiers.is_exported {
+            self.exported[module].insert(name.clone());
+        }
+        // The name is also a value: it is the constructor. Classes are
+        // declared before any scope is open, so this is recorded directly.
+        self.module_names[module].insert(name, Resolution::Class(id));
     }
 
     /// Resolves the field types of a class whose name is already registered.
     fn collect_class_fields(&mut self, decl: &TypeDeclItem) {
-        let Some(id) = self.class_names.get(&decl.name.name).copied() else {
+        let Some(id) = self.own_type(&decl.name.name) else {
             // `declare_class` reported why this declaration is not a class.
             return;
         };
@@ -141,7 +149,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "default values for fields are not supported by this compiler yet",
                     )
-                    .with_primary(default.span, "not implemented in Noto 0.3"),
+                    .with_primary(default.span, "not implemented in Noto 0.4"),
                 );
             }
 
@@ -216,7 +224,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "generic methods are not supported by this compiler yet",
                 )
-                .with_primary(function.type_params[0].span, "not implemented in Noto 0.3"),
+                .with_primary(function.type_params[0].span, "not implemented in Noto 0.4"),
             );
             return;
         }
@@ -256,6 +264,9 @@ impl Checker<'_> {
 
         self.functions.push(FunctionInfo {
             name: format!("{class_name}.{short}"),
+            module: self.current_module,
+            // A method follows its class: exporting the class exports them.
+            is_exported: self.classes[class.0 as usize].is_exported,
             parameters: Vec::new(),
             result,
             locals: Vec::new(),
@@ -295,7 +306,7 @@ impl Checker<'_> {
                 codes::UNSUPPORTED_CONSTRUCT,
                 format!("`{name}` declarations are not supported by this compiler yet"),
             )
-            .with_primary(item.span, "not implemented in Noto 0.3")
+            .with_primary(item.span, "not implemented in Noto 0.4")
             .with_note(
                 "the syntax is accepted so that tooling can read the whole language; \
                  code generation for it lands in a later release",
@@ -310,7 +321,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "extension functions are not supported by this compiler yet",
                 )
-                .with_primary(receiver.span, "not implemented in Noto 0.3"),
+                .with_primary(receiver.span, "not implemented in Noto 0.4"),
             );
             return;
         }
@@ -320,7 +331,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "generic functions are not supported by this compiler yet",
                 )
-                .with_primary(function.type_params[0].span, "not implemented in Noto 0.3"),
+                .with_primary(function.type_params[0].span, "not implemented in Noto 0.4"),
             );
             return;
         }
@@ -348,6 +359,8 @@ impl Checker<'_> {
 
         self.functions.push(FunctionInfo {
             name: name.clone(),
+            module: self.current_module,
+            is_exported: item.modifiers.is_exported,
             parameters: Vec::new(),
             result,
             locals: Vec::new(),
@@ -373,13 +386,17 @@ impl Checker<'_> {
         self.current_function = previous_function;
 
         self.scopes.declare(name.clone(), Resolution::Function(id));
-        if name == "main" {
+        if item.modifiers.is_exported {
+            self.exported[self.current_module.0 as usize].insert(name.clone());
+        }
+        // Only the root module's `main` is the program's entry point.
+        if name == "main" && self.current_module == crate::ModuleId::ROOT {
             self.entry = Some(id);
         }
     }
 
     /// Checks that `main` has a signature the runtime can call.
-    fn check_entry_signature(&mut self, entry: FunctionId) {
+    pub(crate) fn check_entry_signature(&mut self, entry: FunctionId) {
         let function = &self.functions[entry.0 as usize];
         let span = function.span;
         let takes_arguments = !function.parameters.is_empty();
@@ -417,7 +434,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "`main` cannot be `async` in this compiler yet",
                 )
-                .with_primary(span, "not implemented in Noto 0.3"),
+                .with_primary(span, "not implemented in Noto 0.4"),
             );
         }
     }
@@ -455,10 +472,16 @@ impl Checker<'_> {
         let id = ConstId(self.constants.len() as u32);
         self.constants.push(ConstInfo {
             name: constant.name.name.clone(),
+            module: self.current_module,
+            is_exported: item.modifiers.is_exported,
             ty,
             value,
             span: item.span,
         });
+        if item.modifiers.is_exported {
+            self.exported[self.current_module.0 as usize]
+                .insert(constant.name.name.clone());
+        }
         self.scopes.declare(constant.name.name.clone(), Resolution::Const(id));
     }
 
@@ -471,6 +494,8 @@ impl Checker<'_> {
             // The mangled name keeps tests out of the ordinary namespace while
             // staying readable in a stack trace.
             name: format!("test${}", test.name),
+            module: self.current_module,
+            is_exported: false,
             parameters: Vec::new(),
             result: unit,
             locals: Vec::new(),
@@ -485,10 +510,16 @@ impl Checker<'_> {
         });
     }
 
+    /// Finds a function this module already declares under `name`.
+    ///
+    /// Two modules may each declare a `helper`; only a repeat inside one
+    /// module is a redeclaration.
     fn lookup_function(&self, name: &str) -> Option<FunctionId> {
         self.functions
             .iter()
-            .position(|function| function.name == name)
+            .position(|function| {
+                function.module == self.current_module && function.name == name
+            })
             .map(|index| FunctionId(index as u32))
     }
 
@@ -632,7 +663,7 @@ impl Checker<'_> {
                             codes::UNSUPPORTED_CONSTRUCT,
                             "generic types are not supported by this compiler yet",
                         )
-                        .with_primary(ty.span, "not implemented in Noto 0.3"),
+                        .with_primary(ty.span, "not implemented in Noto 0.4"),
                     );
                     return self.store.error();
                 }
@@ -658,7 +689,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "list types are not supported by this compiler yet",
                     )
-                    .with_primary(ty.span, "not implemented in Noto 0.3"),
+                    .with_primary(ty.span, "not implemented in Noto 0.4"),
                 );
                 self.store.error()
             }
@@ -671,7 +702,7 @@ impl Checker<'_> {
         if let Some(primitive) = Primitive::from_name(name) {
             return self.store.primitive(primitive);
         }
-        if let Some(id) = self.class_names.get(name).copied() {
+        if let Some(id) = self.lookup_type(name) {
             return self.classes[id.0 as usize].ty;
         }
         match name {

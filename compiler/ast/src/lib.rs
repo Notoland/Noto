@@ -58,6 +58,20 @@ impl NodeIdGenerator {
         NodeIdGenerator { next: 0 }
     }
 
+    /// Creates a generator that continues from `first`.
+    ///
+    /// A program's side tables are keyed by [`NodeId`] across every module it
+    /// is made of, so each file's ids have to be disjoint from the last
+    /// file's.
+    pub fn starting_at(first: NodeId) -> Self {
+        NodeIdGenerator { next: first.0 }
+    }
+
+    /// The next id it would hand out.
+    pub fn next_free(&self) -> NodeId {
+        NodeId(self.next)
+    }
+
     /// Allocates the next id.
     pub fn next_id(&mut self) -> NodeId {
         let id = NodeId(self.next);
