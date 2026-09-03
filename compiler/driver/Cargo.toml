@@ -1,0 +1,22 @@
+[package]
+name = "noto-driver"
+description = "Compilation driver orchestrating the Noto pipeline"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+noto-span.workspace = true
+noto-diagnostics.workspace = true
+noto-lexer.workspace = true
+noto-ast.workspace = true
+noto-parser.workspace = true
+noto-types.workspace = true
+noto-semantic.workspace = true
+noto-ir.workspace = true
+noto-lower.workspace = true
+noto-optimizer.workspace = true
+noto-codegen.workspace = true

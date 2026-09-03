@@ -1,0 +1,18 @@
+[package]
+name = "noto-semantic"
+description = "Semantic analysis and type checking for Noto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+noto-span.workspace = true
+noto-diagnostics.workspace = true
+noto-ast.workspace = true
+noto-types.workspace = true
+
+[dev-dependencies]
+noto-parser.workspace = true

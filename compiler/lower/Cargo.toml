@@ -1,0 +1,20 @@
+[package]
+name = "noto-lower"
+description = "Lowering from the Noto AST to Noto IR"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+noto-span.workspace = true
+noto-diagnostics.workspace = true
+noto-ast.workspace = true
+noto-types.workspace = true
+noto-semantic.workspace = true
+noto-ir.workspace = true
+
+[dev-dependencies]
+noto-parser.workspace = true

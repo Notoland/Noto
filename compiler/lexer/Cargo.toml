@@ -1,0 +1,13 @@
+[package]
+name = "noto-lexer"
+description = "Lexical analysis for the Noto programming language"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+noto-span.workspace = true
+noto-diagnostics.workspace = true

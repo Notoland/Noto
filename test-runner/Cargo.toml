@@ -1,0 +1,14 @@
+[package]
+name = "noto-test-runner"
+description = "The official Noto test runner"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+noto-span.workspace = true
+noto-diagnostics.workspace = true
+noto-driver.workspace = true

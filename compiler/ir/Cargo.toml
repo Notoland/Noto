@@ -1,0 +1,13 @@
+[package]
+name = "noto-ir"
+description = "Noto IR: the language's own intermediate representation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+noto-span.workspace = true
+noto-types.workspace = true

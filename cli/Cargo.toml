@@ -1,0 +1,22 @@
+[package]
+name = "noto-cli"
+description = "The Noto command line interface"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "noto"
+path = "src/main.rs"
+
+[dependencies]
+noto-span.workspace = true
+noto-codegen.workspace = true
+noto-diagnostics.workspace = true
+noto-driver.workspace = true
+noto-formatter.workspace = true
+noto-linter.workspace = true
+noto-test-runner.workspace = true

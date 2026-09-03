@@ -1,0 +1,236 @@
+# Noto
+
+Noto is a native, modern, safe and productive programming language, designed to
+let you write anything from a small program to a complex system, combining high
+performance with a development experience that stays simple.
+
+```noto
+fn main() {
+    println("Hello, Noto!")
+}
+```
+
+Noto compiles to a **static native executable**. There is no virtual machine, no
+interpreter, and no runtime to install — not even libc. The compiler writes the
+ELF file itself.
+
+```
+$ noto run hello.noto
+Hello, Noto!
+```
+
+---
+
+## Status
+
+**Noto is in early development.** Version 0.1 is a working compiler for a real
+subset of the language, not a finished product. The pipeline runs end to end:
+source becomes a native Linux x86-64 executable that you can run.
+
+What that means in practice:
+
+- **287 tests pass, zero failures, zero warnings.**
+- Constructs that are not implemented yet are **rejected with a clear error**,
+  never silently accepted and miscompiled.
+- The parser covers the whole language; the back end does not yet.
+
+See [HANDOFF.md](HANDOFF.md) for the precise state of every part, and
+[section 4](HANDOFF.md#4-what-does-not-work--and-how-it-fails) for exactly what
+is not implemented and where it is rejected.
+
+## What works today
+
+```noto
+fn add(a: Int, b: Int): Int {
+    return a + b
+}
+
+fn classify(age: Int): String = when (age) {
+    0..12  -> "Criança"
+    13..17 -> "Adolescente"
+    else   -> "Adulto"
+}
+
+fn main() {
+    val name = "João"
+    var total = 0
+
+    for i in 1..=10 {
+        total += i
+    }
+
+    println("Olá, $name! Soma = $total")
+    println(classify(16))
+    println(add(2, 3) == 5)
+
+    val maybe: String? = null
+    println(maybe ?: "sem valor")
+}
+```
+
+```
+Olá, João! Soma = 55
+Adolescente
+true
+sem valor
+```
+
+- the `noto` CLI: `run`, `build`, `check`, `version`
+- `val` and `var` with type inference
+- `Int`, `Int8`…`Int64`, `UInt`…`UInt64`, `Bool`, `Char`, `Byte`, `String`,
+  `Unit`, `Nothing`, `Any`
+- functions with parameters, results, expression bodies, forward references
+- `if` and `when` as expressions, with ranges, guards and multiple patterns
+- `while`, `loop`, `for … in`, `break`, `continue`
+- null safety: non-nullable by default, `T?`, `?:`
+- string interpolation and concatenation
+- `const` folded at compile time
+- `test "…" { … }` declarations
+
+## Design
+
+Noto borrows good ideas from many languages and copies none of them. A few
+decisions that are already settled:
+
+**No statement terminator.** A line break ends a statement once it is complete.
+An operator left at the end of a line continues the expression, and a line
+starting with `.` continues the previous one:
+
+```noto
+val adults = users
+    .filter { it.age >= 18 }
+    .map { it.name }
+```
+
+**Bitwise operators bind tighter than comparison.** `flags & MASK == 0` parses
+as `(flags & MASK) == 0`, which is what the code looks like it means. C's
+precedence here is a long-standing source of bugs and Noto does not repeat it.
+
+**No implicit numeric conversions, at all.** An `Int32` does not quietly become
+an `Int64`. When a widening would be safe, the compiler says so:
+
+```
+error[NOTO0409]: `+` cannot mix `Int64` and `Int32`
+ --> main.noto:4:17
+  |
+4 |     val c = a + b
+  |                 ^ this is a `Int32`
+  |
+  = note: Noto never converts between number types on its own
+  = help: convert it with `.toInt64()`
+```
+
+**`Int` is 64 bits on every target.** A program that is correct on one platform
+is correct on all of them.
+
+**Diagnostics are part of the language surface.** Every message has a stable
+`NOTOnnnn` code, a span that points at the right bytes, and a `help:` line when
+there is a concrete fix.
+
+## Architecture
+
+Noto has its own intermediate representation. LLVM is not part of the
+architecture; the backend emits machine code and writes the executable itself.
+
+```
+Noto source
+    ↓  lexer
+  tokens
+    ↓  parser
+   AST
+    ↓  semantic analysis + type checker
+ typed AST
+    ↓  lowering
+  Noto IR
+    ↓  optimizer
+  Noto IR
+    ↓  native backend
+machine code
+    ↓  ELF writer
+ executable
+```
+
+Each phase is a separate crate that knows nothing about the file system, which
+is what lets the same code serve the compiler, the language server and the test
+runner. See [docs/architecture.md](docs/architecture.md).
+
+## Building
+
+Noto is written in Rust and has **no external dependencies** — the whole
+compiler builds from `std` alone.
+
+```bash
+git clone https://github.com/Notoland/Noto.git
+cd Noto
+cargo build --release
+cargo test --workspace
+```
+
+Compiling and running a Noto program:
+
+```bash
+cargo run -q -p noto-cli -- run examples/hello.noto
+```
+
+The implemented commands:
+
+```
+noto run <file.noto>        compile to a temporary executable and run it
+noto build <file.noto>      write the executable next to the source
+noto check <file.noto>      parse and analyse, report diagnostics only
+noto version                print the version
+```
+
+`noto build` also accepts `-o/--output <path>` and `--emit=ir`, which prints
+the textual Noto IR instead of writing an executable. Still planned: `noto
+test`, `noto fmt`, `noto lint`, `noto new`, `noto clean`.
+
+## Project layout
+
+```
+compiler/
+  span/          source positions and source maps
+  diagnostics/   diagnostics and the terminal renderer
+  lexer/         tokens, keywords, literals, interpolation
+  ast/           syntax tree and visitor
+  parser/        recursive descent with precedence climbing
+  types/         type representation and interning
+  semantic/      name resolution and type checking
+  ir/            Noto IR and its textual form
+  lower/         AST to Noto IR
+  optimizer/     passes over Noto IR
+  codegen/       x86-64 backend and ELF writer
+  driver/        pipeline orchestration
+runtime/         the runtime contract
+cli/             the `noto` command
+std/             the standard library
+docs/            specification, architecture, RFCs
+```
+
+## Targets
+
+Linux x86-64 is the first target and the only one implemented. The backend is
+behind a `Target` abstraction so that Linux ARM64, Windows, macOS ARM64 and
+RISC-V can be added without touching the phases above.
+
+## Contributing
+
+Noto is early enough that the most valuable contributions are the unfinished
+pieces listed in [HANDOFF.md § 5](HANDOFF.md#5-what-remains-in-the-order-it-should-be-done).
+
+Two rules matter more than the rest:
+
+1. **Changes to the language go through an RFC** in `docs/rfcs/`. Decisions do
+   not land in the compiler undocumented.
+2. **Tests are written with the code, not after it.** Parser tests assert on
+   S-expressions, lowering tests on the textual IR, and the instruction encoder
+   on exact bytes.
+
+The decisions that are already settled are listed in
+[HANDOFF.md § 6](HANDOFF.md#6-decisions-already-made--do-not-silently-change-these).
+Each one is held in place by a test; changing one means changing its test and
+writing an RFC.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).

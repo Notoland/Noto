@@ -1,0 +1,16 @@
+[package]
+name = "noto-codegen"
+description = "Native code generation and object emission for Noto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+noto-ir.workspace = true
+noto-types.workspace = true
+noto-diagnostics.workspace = true
+noto-runtime.workspace = true
+noto-span.workspace = true

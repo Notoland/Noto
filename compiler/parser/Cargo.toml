@@ -1,0 +1,15 @@
+[package]
+name = "noto-parser"
+description = "Parser for the Noto programming language"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+noto-span.workspace = true
+noto-diagnostics.workspace = true
+noto-lexer.workspace = true
+noto-ast.workspace = true
