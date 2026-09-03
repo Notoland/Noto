@@ -152,8 +152,8 @@ allocator behind allocation intrinsics is currently a bump pointer over
 ### The tooling crates
 
 `noto-cli` (the `noto` command), `noto-formatter`, `noto-linter`,
-`noto-test-runner`, `noto-lsp`, `noto-debugger`. The CLI and the test runner
-are implemented; the others are placeholders. They are crates already so that
+`noto-test-runner`, `noto-lsp`, `noto-debugger`. The CLI, the linter and the
+test runner are implemented; the others are placeholders. They are crates already so that
 their public APIs can grow without dependency churn later.
 
 `noto-test-runner` reuses the pipeline rather than adding one. Semantic
@@ -161,6 +161,14 @@ analysis already records each `test` declaration and lowering already emits
 its body as a function named `test$<name>`, so the runner compiles the file
 once to Noto IR, then asks the backend for one executable per test with that
 test set as `Program::entry`. Nothing about the backend is test-aware.
+
+`noto-linter` reads what analysis already learned rather than recomputing it:
+which name refers to which binding is the type checker's answer, and asking
+the question twice is how two answers drift apart. One walk collects every
+mention of every name, and the lints are then decided from side tables —
+which is also why the linter reports nothing about unreachable code. The type
+checker already emits `NOTO0602` from the `Nothing` type, and that catches an
+`if` whose every branch returns, which a syntactic lint would miss.
 
 One process per test is a deliberate choice, not an accident of the design. A
 failing `assert` exits with `ASSERT_FAILURE_STATUS` (101) and there is no

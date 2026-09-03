@@ -336,6 +336,10 @@ pub mod codes {
     pub const UNREACHABLE_CODE: Code = Code(602);
     /// An import that is never used.
     pub const UNUSED_IMPORT: Code = Code(603);
+    /// A function that is never called.
+    pub const UNUSED_FUNCTION: Code = Code(604);
+    /// A constant that is never read.
+    pub const UNUSED_CONST: Code = Code(605);
 }
 
 #[cfg(test)]

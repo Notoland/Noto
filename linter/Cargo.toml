@@ -9,7 +9,9 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-noto-span.workspace = true
 noto-diagnostics.workspace = true
 noto-ast.workspace = true
-noto-parser.workspace = true
+noto-semantic.workspace = true
+
+[dev-dependencies]
+noto-driver.workspace = true

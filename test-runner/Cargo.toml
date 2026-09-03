@@ -9,7 +9,6 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-noto-span.workspace = true
 noto-diagnostics.workspace = true
 noto-ir.workspace = true
 noto-codegen.workspace = true

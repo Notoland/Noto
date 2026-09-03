@@ -28,7 +28,13 @@ module must agree.**
 | `03xx` | semantic, names | `UNKNOWN_NAME`, `DUPLICATE_NAME`, `REASSIGNED_VAL`, `OUTSIDE_LOOP`, `USED_BEFORE_INIT` |
 | `04xx` | semantic, types | `TYPE_MISMATCH`, `ARITY_MISMATCH`, `NULLABLE_NOT_ALLOWED`, `NON_EXHAUSTIVE_WHEN`, `NO_IMPLICIT_CONVERSION`, `NON_BOOL_CONDITION` |
 | `05xx` | lowering / backend | `UNSUPPORTED_CONSTRUCT` (not implemented in Noto 0.1), `UNSUPPORTED_TARGET`, `CANNOT_WRITE_OUTPUT` |
-| `06xx` | linter | `UNUSED_BINDING`, `VAR_NEVER_REASSIGNED`, `UNREACHABLE_CODE`, `UNUSED_IMPORT` |
+| `06xx` | linter | `UNUSED_BINDING`, `VAR_NEVER_REASSIGNED`, `UNREACHABLE_CODE`, `UNUSED_IMPORT`, `UNUSED_FUNCTION`, `UNUSED_CONST` |
+
+`UNREACHABLE_CODE` is the exception in that range: semantic analysis emits it,
+not the linter. It falls out of type checking for free — a statement whose
+type is `Nothing` never continues — and that catches cases a syntactic lint
+would miss, such as an `if` whose every branch returns. The linter would only
+report the same line twice.
 
 A new diagnostic takes the next free code in its phase's range; a new phase
 gets a new range documented here and in `codes`.

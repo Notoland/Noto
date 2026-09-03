@@ -56,7 +56,7 @@ noto/
 ├── runtime/          noto-runtime      runtime contract (no machine code)     3 tests
 ├── cli/              noto-cli          the `noto` command
 ├── formatter/        noto-formatter    STUB
-├── linter/           noto-linter       STUB
+├── linter/           noto-linter       `noto lint`, NOTO0600/0601/0604/0605  18 tests
 ├── test-runner/      noto-test-runner  `noto test`, one process per test  11 tests
 ├── lsp/              noto-lsp          STUB
 ├── debugger/         noto-debugger     STUB
@@ -205,9 +205,10 @@ handful of intrinsics.
 - **formatter** (`noto fmt`) — deterministic, opinionated. The lexer keeps
   every token with spans and preserves doc comments, which is what a formatter
   needs. Decide and document the rules first.
-- **linter** (`noto lint`) — codes `NOTO0600`-`0603` are already allocated:
-  unused binding, `var` never reassigned, unreachable code, unused import.
-  `noto_ast::visit::Visitor` is the traversal.
+- ~~**linter** (`noto lint`)~~ — done, except `NOTO0603` (unused import),
+  which needs the module system first. `NOTO0602` stayed in semantic analysis
+  rather than moving to the linter: it falls out of the `Nothing` type for
+  free and catches more than a syntactic lint could.
 - ~~**test runner** (`noto test`)~~ — done. Compiles the file once, then emits
   one executable per test with that test as `Program::entry` and runs each in
   its own process. `CompileOptions::allow_no_main` lets a file of tests build.

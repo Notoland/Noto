@@ -50,6 +50,10 @@ enum Command {
         input: PathBuf,
         filter: Option<String>,
     },
+    Lint {
+        input: PathBuf,
+        deny_warnings: bool,
+    },
     Version,
     Help,
 }
@@ -77,6 +81,20 @@ impl Command {
             "check" => Ok(Command::Check {
                 input: input_of(rest)?,
             }),
+            "lint" => {
+                let mut deny_warnings = false;
+                let mut input = None;
+                for arg in rest {
+                    match arg.as_str() {
+                        "-D" | "--deny-warnings" => deny_warnings = true,
+                        other => input = Some(PathBuf::from(other)),
+                    }
+                }
+                Ok(Command::Lint {
+                    input: input.ok_or("`lint` needs an input file")?,
+                    deny_warnings,
+                })
+            }
             "test" => {
                 let mut filter = None;
                 let mut input = None;
@@ -141,6 +159,7 @@ fn run(command: Command) -> ExitCode {
         Command::Build { input, emit, .. } => (input, emit_stage(emit)),
         Command::Check { input } => (input, Stage::Check),
         Command::Test { input, .. } => (input, Stage::Ir),
+        Command::Lint { input, .. } => (input, Stage::Check),
     };
 
     let mut map = SourceMap::new();
@@ -152,16 +171,27 @@ fn run(command: Command) -> ExitCode {
 
     let options = CompileOptions {
         stage,
-        // A file of tests is a legitimate program without a `main`.
-        allow_no_main: matches!(command, Command::Test { .. }),
+        // A file of tests, or a file being linted, is a legitimate program
+        // without a `main`.
+        allow_no_main: matches!(command, Command::Test { .. } | Command::Lint { .. }),
         ..CompileOptions::default()
     };
     let result = compile(&map, file, &options, &mut sink);
+
+    // The linter is a phase like any other: it pushes into the same sink, so
+    // its warnings are rendered and counted with everything else.
+    if matches!(command, Command::Lint { .. }) {
+        if let (Some(module), Some(analysis)) = (&result.module, &result.analysis) {
+            noto_linter::lint(module, analysis, &mut sink);
+        }
+    }
+
     report(&map, &sink);
 
     if sink.has_errors() {
         return ExitCode::FAILURE;
     }
+    let warnings = sink.warning_count();
 
     match command {
         Command::Check { .. } => ExitCode::SUCCESS,
@@ -230,6 +260,13 @@ fn run(command: Command) -> ExitCode {
                 ExitCode::FAILURE
             }
         }
+        Command::Lint { deny_warnings, .. } => {
+            if deny_warnings && warnings > 0 {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
         Command::Version | Command::Help => ExitCode::SUCCESS,
     }
 }
@@ -287,6 +324,8 @@ commands:
   check <file.noto>        parse and analyse, report diagnostics only
   test <file.noto>         compile and run every `test` declaration
     --filter <text>        only run tests whose name contains <text>
+  lint <file.noto>         report what is legal but probably not meant
+    -D, --deny-warnings    exit non-zero when any lint fires
   version                  print the version
   help                     print this message",
         env!("CARGO_PKG_VERSION")

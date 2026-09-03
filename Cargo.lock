@@ -96,8 +96,8 @@ version = "0.1.0"
 dependencies = [
  "noto-ast",
  "noto-diagnostics",
- "noto-parser",
- "noto-span",
+ "noto-driver",
+ "noto-semantic",
 ]
 
 [[package]]
@@ -168,7 +168,6 @@ dependencies = [
  "noto-driver",
  "noto-ir",
  "noto-runtime",
- "noto-span",
 ]
 
 [[package]]

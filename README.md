@@ -179,13 +179,20 @@ noto run <file.noto>        compile to a temporary executable and run it
 noto build <file.noto>      write the executable next to the source
 noto check <file.noto>      parse and analyse, report diagnostics only
 noto test <file.noto>       compile and run every `test` declaration
+noto lint <file.noto>       report what is legal but probably not meant
 noto version                print the version
 ```
 
 `noto build` also accepts `-o/--output <path>` and `--emit=ir`, which prints
 the textual Noto IR instead of writing an executable. `noto test` accepts
-`--filter <text>` to run only the tests whose name contains it. Still planned:
-`noto fmt`, `noto lint`, `noto new`, `noto clean`.
+`--filter <text>` to run only the tests whose name contains it, and
+`noto lint` accepts `-D/--deny-warnings` to exit non-zero when any lint fires.
+Still planned: `noto fmt`, `noto new`, `noto clean`.
+
+Every lint is a warning with a stable code — `NOTO0600` a binding nothing
+reads, `NOTO0601` a `var` nothing reassigns, `NOTO0604` a function nothing
+calls, `NOTO0605` a constant nothing reads. A leading underscore
+(`val _scratch = ...`) says the declaration is unused on purpose.
 
 Tests need no `main` and no test framework — a `test` declaration is part of
 the language:
