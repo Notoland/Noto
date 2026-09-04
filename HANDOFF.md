@@ -5,7 +5,7 @@ human or agent. Read this before touching anything.
 
 **Where the project stands:** the compiler is real and works end to end. A
 `.noto` file becomes a static native ELF executable with no LLVM, no libc, and
-no external toolchain. 465 tests pass, 0 fail, no warnings. The whole tool
+no external toolchain. 483 tests pass, 0 fail, no warnings. The whole tool
 set — `run`, `build`, `check`, `test`, `lint`, `fmt` — is implemented, and
 `class` gives the language its first object type.
 
@@ -110,6 +110,8 @@ fn main() {
   `noto test`
 - `import`/`export`: a program is many files, one module each, resolved from
   the root file's directory
+- `[T]` lists: literals, `.length`, indexing, element assignment and `for`,
+  with every index bounds-checked at runtime
 - `enum Direction { North, East }` and `enum Shape { Circle(r: Int) }`:
   cases with or without data, matched bare or qualified, destructured in a
   pattern, with coverage counting as exhaustive
@@ -136,7 +138,7 @@ in Noto 0.1`. Nothing is silently accepted and miscompiled.
 | extension functions | `collect.rs` `collect_fn` | receiver resolution missing |
 | floats | `compiler/lower/src/expr.rs` `lower_literal` | needs SSE registers in the backend |
 | `defer` | `compiler/lower/src/stmt.rs` `lower_stmt` | needs scope-exit tracking |
-| safe field access `p?.x`, safe calls `?.f()`, `is`/`as`, `?` propagation, `await`, `unsafe`, lambdas as values, tuples, lists | `check.rs` / `expr.rs` fallthrough arms | |
+| safe field access `p?.x`, safe calls `?.f()`, `is`/`as`, `?` propagation, `await`, `unsafe`, lambdas as values, tuples | `check.rs` / `expr.rs` fallthrough arms | |
 | named arguments | `check.rs` `check_call` | |
 | local `fn` inside a body | `check.rs` `check_stmt` | |
 | more than 6 parameters | `codegen/src/lib.rs` `CodegenError::TooManyParameters` | System V register limit; stack arguments not implemented |
@@ -292,7 +294,7 @@ RFC.
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
-cargo test --workspace          # 465 tests, must stay at 0 failures
+cargo test --workspace          # 483 tests, must stay at 0 failures
 cargo build --workspace
 cargo run -q -p noto-driver --example emit -- examples/hello.noto /tmp/hello && /tmp/hello
 ```

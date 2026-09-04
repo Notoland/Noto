@@ -1,0 +1,81 @@
+// Lists in Noto 0.6. Run the tests with `noto test examples/lists.noto`.
+//
+// A list is a fixed-length sequence: a pointer to its length followed by its
+// elements, one machine word each. Every index is checked before it is used —
+// reading past the end ends the process rather than returning whatever the
+// allocator last left there.
+
+class Point(val x: Int, val y: Int)
+
+export fn sum(xs: [Int]): Int {
+    var total = 0
+    for x in xs { total += x }
+    return total
+}
+
+export fn largest(xs: [Int]): Int {
+    assert(xs.length > 0)
+    var best = xs[0]
+    for x in xs {
+        if x > best { best = x }
+    }
+    return best
+}
+
+export fn joined(parts: [String], separator: String): String {
+    var out = ""
+    var index = 0
+    while index < parts.length {
+        if index > 0 { out += separator }
+        out += parts[index]
+        index += 1
+    }
+    return out
+}
+
+test "a list knows how long it is" {
+    assert([1, 2, 3].length == 3)
+    val empty: [Int] = []
+    assert(empty.length == 0)
+}
+
+test "elements are read by index" {
+    val xs = [10, 20, 30]
+    assert(xs[0] == 10)
+    assert(xs[2] == 30)
+}
+
+test "an element can be written" {
+    val xs = [1, 2, 3]
+    xs[1] = 99
+    assert(xs[1] == 99)
+    xs[1] += 1
+    assert(xs[1] == 100)
+}
+
+test "a for walks every element" {
+    assert(sum([1, 2, 3, 4]) == 10)
+    assert(sum([]) == 0)
+    assert(largest([3, 9, 4]) == 9)
+}
+
+test "a list may hold anything a binding may" {
+    val points = [Point(1, 2), Point(3, 4)]
+    assert(points[1].y == 4)
+
+    val grid = [[1, 2], [3]]
+    assert(grid[0][1] == 2)
+    assert(grid[1].length == 1)
+}
+
+test "strings join through a list" {
+    assert(joined(["a", "b", "c"], "-") == "a-b-c")
+    assert(joined([], ",") == "")
+}
+
+fn main() {
+    val readings = [12, 7, 30, 4]
+    println("${readings.length} readings")
+    println("total ${sum(readings)}, largest ${largest(readings)}")
+    println(joined(["ana", "joão", "maria"], ", "))
+}

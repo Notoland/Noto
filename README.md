@@ -23,13 +23,13 @@ Hello, Noto!
 
 ## Status
 
-**Noto is in early development.** Version 0.5 is a working compiler for a real
+**Noto is in early development.** Version 0.6 is a working compiler for a real
 subset of the language, not a finished product. The pipeline runs end to end:
 source becomes a native Linux x86-64 executable that you can run.
 
 What that means in practice:
 
-- **465 tests pass, zero failures, zero warnings.**
+- **483 tests pass, zero failures, zero warnings.**
 - Constructs that are not implemented yet are **rejected with a clear error**,
   never silently accepted and miscompiled.
 - The parser covers the whole language; the back end does not yet.
@@ -159,6 +159,8 @@ sem valor
 - `import` and `export`: a program made of many files
 - `enum` with cases that may carry data, and a `when` that checks it covered
   every case
+- `[T]` lists: literals, indexing, element assignment, `for`, with every
+  index checked
 
 ## Design
 

@@ -666,3 +666,61 @@ fn a_compound_property_assignment_reads_through_the_getter_first() {
     assert_eq!(bump.matches("call fn").count(), 2, "one get, one set: {bump}");
     assert_eq!(bump.matches("load $0").count(), 1, "the receiver is read once: {bump}");
 }
+
+// --- lists -------------------------------------------------------------------
+
+#[test]
+fn a_list_literal_stores_its_length_then_its_elements() {
+    let ir = function_ir("fn make(): [Int] = [7, 8]\n", "make");
+    assert!(ir.contains("alloc 24"), "a length and two elements: {ir}");
+    assert!(ir.contains("store [%0+0] 2:i64"), "the length comes first: {ir}");
+    assert!(ir.contains("store [%0+8] 7:i64"), "{ir}");
+    assert!(ir.contains("store [%0+16] 8:i64"), "{ir}");
+}
+
+#[test]
+fn indexing_checks_the_index_before_reading() {
+    let ir = function_ir("fn first(xs: [Int]): Int = xs[0]\n", "first");
+    let check = ir.find("index_check").expect("the bound is checked");
+    let read = ir.rfind("load [").expect("then the element is read");
+    assert!(check < read, "the check comes first:\n{ir}");
+}
+
+#[test]
+fn a_lists_length_is_read_rather_than_called() {
+    let ir = function_ir("fn size(xs: [Int]): Int = xs.length\n", "size");
+    assert!(ir.contains("load [%0+0]"), "{ir}");
+    assert!(!ir.contains("intrinsic"), "the length is the first word, not a call: {ir}");
+}
+
+#[test]
+fn iterating_a_list_reads_its_length_once() {
+    let ir = function_ir(
+        "fn total(xs: [Int]): Int {\n    var sum = 0\n    for x in xs { sum += x }\n    return sum\n}\n",
+        "total",
+    );
+    assert_eq!(
+        ir.matches("load [%1+0]").count() + ir.matches("load [%0+0]").count(),
+        1,
+        "the length is read before the loop, not at every step:\n{ir}"
+    );
+}
+
+#[test]
+fn an_element_assignment_checks_the_index_too() {
+    let ir = function_ir(
+        "fn put(xs: [Int]) {\n    xs[1] = 9\n}\n",
+        "put",
+    );
+    assert!(ir.contains("index_check"), "{ir}");
+    assert!(ir.contains("store ["), "{ir}");
+}
+
+#[test]
+fn a_compound_element_assignment_evaluates_the_index_once() {
+    let ir = function_ir(
+        "fn bump(xs: [Int], i: Int) {\n    xs[i] += 1\n}\n",
+        "bump",
+    );
+    assert_eq!(ir.matches("index_check").count(), 1, "one check, one address:\n{ir}");
+}

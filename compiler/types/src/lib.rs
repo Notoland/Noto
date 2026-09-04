@@ -41,6 +41,12 @@ pub enum Type {
     },
     /// `T?`: `T` extended with the absence of a value.
     Nullable(TypeId),
+    /// `[T]`: a fixed-length sequence of `T`.
+    ///
+    /// Built in rather than a library type because the compiler creates one
+    /// for every list literal, and because indexing it is a machine operation
+    /// rather than a call.
+    List(TypeId),
     /// `(A, B)`: an anonymous product.
     Tuple(Vec<TypeId>),
     /// The type of a function value.

@@ -1,9 +1,9 @@
-# The Noto language specification — 0.5
+# The Noto language specification — 0.6
 
 The language as implemented, section by section. Everything marked **not
 implemented** parses (the parser covers the full grammar) but is rejected
 during semantic analysis or lowering with `NOTO0500 … not implemented in
-Noto 0.5`. Nothing is silently accepted and miscompiled.
+Noto 0.6`. Nothing is silently accepted and miscompiled.
 
 This document describes behaviour; syntax details that deserve their own
 rationale live in [design/](design/).
@@ -204,6 +204,36 @@ case's values — every case of it, including one carrying nothing.
 
 Not implemented: explicit case values (`Red = 1`), methods on an enum,
 generic enums, interfaces on an enum.
+
+## Lists
+
+```noto
+val readings = [12, 7, 30]
+println(readings.length)
+println(readings[0])
+readings[0] = 15
+
+for x in readings { println(x) }
+```
+
+`[T]` is a fixed-length sequence of `T`: a pointer to its length followed by
+its elements, one machine word each. A literal takes its element type from
+its first element, and every later element must fit that type. An empty
+literal has nothing to infer from, so it takes its type from where it is used
+and is an error where nothing expects one — `val xs: [Int] = []`.
+
+**Every index is checked.** An index outside `0..length` ends the process
+with status 102 rather than reading whatever the allocator last left there.
+One unsigned comparison covers both ends, so a negative index is caught by
+the same check.
+
+A list is invariant in its element: a `[Int]` is not a `[Any]`, because
+writing an `Any` through the second would break the first. A literal is a
+different matter — it is built to fit what is expected of it, so passing
+`[1, 2]` where `[Any]` is wanted is fine.
+
+Not implemented: growing a list (`push`), slicing, concatenation, and
+literals of a length not known where they are written.
 
 ## Statements and termination
 

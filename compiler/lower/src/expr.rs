@@ -13,6 +13,8 @@ impl Builder<'_> {
             ExprKind::Literal(literal) => self.lower_literal(literal, expr),
             // `this` is the receiver parameter, bound as an ordinary local.
             ExprKind::Path(_) | ExprKind::This => self.lower_path(expr),
+            ExprKind::ListLiteral(items) => self.lower_list_literal(items, expr),
+            ExprKind::Index { target, index } => self.lower_index(target, index, expr),
             ExprKind::Unary { op, operand } => self.lower_unary(*op, operand, expr),
             ExprKind::Binary { op, left, right, .. } => self.lower_binary(*op, left, right, expr),
             ExprKind::Assign { target, value, op, .. } => {
@@ -326,6 +328,10 @@ impl Builder<'_> {
         op: Option<BinaryOp>,
         span: Span,
     ) -> Operand {
+        if let ExprKind::Index { target: list, index } = &target.kind {
+            return self.lower_index_assign(list, index, value, op, span);
+        }
+
         if let Some(Resolution::Property { class, index }) = self.analysis.resolution(target.id) {
             return self.lower_property_assign(class, index, target, value, op, span);
         }
@@ -794,6 +800,63 @@ impl Builder<'_> {
         }
     }
 
+    /// Lowers `xs[i] = v` and `xs[i] += v`.
+    ///
+    /// The list and the index are evaluated once, so `next()[i()] += 1` calls
+    /// each exactly once, in the order they were written.
+    fn lower_index_assign(
+        &mut self,
+        list: &Expr,
+        index: &Expr,
+        value: &Expr,
+        op: Option<BinaryOp>,
+        span: Span,
+    ) -> Operand {
+        let ty = self.type_of(index.id);
+        let _ = ty;
+        let element_ty = match self.analysis.store.get(self.analysis.type_of(list.id)) {
+            noto_types::Type::List(element) => {
+                crate::lower_type(&self.analysis.store, *element)
+            }
+            _ => return self.unsupported(span, "assigning to this target"),
+        };
+
+        let (address, offset) = self.lower_element_address(list, index, span);
+
+        let stored = match op {
+            None => self.lower_expr(value),
+            Some(op) => {
+                let current = self.emit_value(element_ty, span, |dest| InstKind::Load {
+                    dest,
+                    address: address.clone(),
+                    offset,
+                });
+                let right = self.lower_expr(value);
+
+                if op == BinaryOp::Add && element_ty == IrType::Str {
+                    self.emit_value(IrType::Str, span, |dest| InstKind::Intrinsic {
+                        dest: Some(dest),
+                        which: Intrinsic::StringConcat,
+                        arguments: vec![current, right],
+                    })
+                } else {
+                    let Some(ir_op) = binary_op(op, element_ty) else {
+                        return self.unsupported(span, "this compound assignment");
+                    };
+                    self.emit_value(element_ty, span, |dest| InstKind::Binary {
+                        dest,
+                        op: ir_op,
+                        left: current,
+                        right,
+                    })
+                }
+            }
+        };
+
+        self.push(InstKind::Store { address, offset, value: stored }, span);
+        Operand::Const(Const::Unit)
+    }
+
     /// Lowers `r.width = v` where `width` is a property: the receiver is
     /// evaluated once, then the setter is called with it and the value.
     ///
@@ -996,6 +1059,99 @@ impl Builder<'_> {
         object
     }
 
+    /// Lowers `[a, b, c]` to an allocation holding the length and elements.
+    fn lower_list_literal(&mut self, items: &[Expr], expr: &Expr) -> Operand {
+        let values: Vec<Operand> = items.iter().map(|item| self.lower_expr(item)).collect();
+
+        let size = crate::list_size(values.len());
+        let list = self.emit_value(IrType::Ptr, expr.span, |dest| InstKind::Alloc { dest, size });
+
+        self.push(
+            InstKind::Store {
+                address: list.clone(),
+                offset: 0,
+                value: Operand::Const(Const::Int {
+                    value: values.len() as i128,
+                    ty: IrType::I64,
+                }),
+            },
+            expr.span,
+        );
+        for (index, value) in values.into_iter().enumerate() {
+            self.push(
+                InstKind::Store {
+                    address: list.clone(),
+                    offset: crate::element_offset(index as u32),
+                    value,
+                },
+                expr.span,
+            );
+        }
+
+        list
+    }
+
+    /// Lowers `xs[i]`: check the index, then read the element.
+    fn lower_index(&mut self, target: &Expr, index: &Expr, expr: &Expr) -> Operand {
+        let ty = self.type_of(expr.id);
+        let (list, offset) = self.lower_element_address(target, index, expr.span);
+        self.emit_value(ty, expr.span, |dest| InstKind::Load {
+            dest,
+            address: list,
+            offset,
+        })
+    }
+
+    /// Evaluates a list and an index, checks the index, and produces the base
+    /// pointer already advanced to the element.
+    ///
+    /// The offset returned is the fixed header size: the element's own offset
+    /// is folded into the pointer, because the index is not known until it
+    /// runs.
+    fn lower_element_address(
+        &mut self,
+        target: &Expr,
+        index: &Expr,
+        span: Span,
+    ) -> (Operand, u32) {
+        let list = self.lower_expr(target);
+        let position = self.lower_expr(index);
+
+        let length = self.emit_value(IrType::I64, span, |dest| InstKind::Load {
+            dest,
+            address: list.clone(),
+            offset: 0,
+        });
+        self.push(
+            InstKind::Intrinsic {
+                dest: None,
+                which: Intrinsic::IndexCheck,
+                arguments: vec![position.clone(), length],
+            },
+            span,
+        );
+
+        // address = list + index * 8, so the load below reads at the header
+        // size past it.
+        let scaled = self.emit_value(IrType::I64, span, |dest| InstKind::Binary {
+            dest,
+            op: BinOp::Mul,
+            left: position,
+            right: Operand::Const(Const::Int {
+                value: crate::FIELD_SIZE as i128,
+                ty: IrType::I64,
+            }),
+        });
+        let address = self.emit_value(IrType::Ptr, span, |dest| InstKind::Binary {
+            dest,
+            op: BinOp::Add,
+            left: list,
+            right: scaled,
+        });
+
+        (address, crate::FIELD_SIZE)
+    }
+
     /// Lowers `Point(1, 2)` to an allocation followed by one store per field.
     ///
     /// The arguments are evaluated before the allocation so that their order
@@ -1094,6 +1250,18 @@ impl Builder<'_> {
             });
         }
 
+        // A list's length is the first word of what it points at, not a call.
+        if let Some(Resolution::Builtin(noto_semantic::Builtin::ListLength)) =
+            self.analysis.resolution(expr.id)
+        {
+            let list = self.lower_expr(receiver);
+            return self.emit_value(IrType::I64, expr.span, |dest| InstKind::Load {
+                dest,
+                address: list,
+                offset: 0,
+            });
+        }
+
         let Some(Resolution::Builtin(builtin)) = self.analysis.resolution(expr.id) else {
             return self.unsupported(expr.span, "reading this member");
         };
@@ -1179,6 +1347,9 @@ fn binary_op(op: BinaryOp, ty: IrType) -> Option<BinOp> {
 /// The runtime routine a builtin maps to.
 fn intrinsic_for(builtin: Builtin) -> Intrinsic {
     match builtin {
+        // Handled by `lower_member`, which reads the length rather than
+        // calling anything.
+        Builtin::ListLength => Intrinsic::StringLength,
         Builtin::PrintString => Intrinsic::PrintString,
         Builtin::PrintlnString => Intrinsic::PrintlnString,
         Builtin::PrintInt => Intrinsic::PrintInt,

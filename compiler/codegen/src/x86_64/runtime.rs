@@ -8,7 +8,7 @@
 //!
 //! # The allocator
 //!
-//! Noto 0.5 allocates from a bump pointer over regions obtained with `mmap`
+//! Noto 0.6 allocates from a bump pointer over regions obtained with `mmap`
 //! and never frees. That is enough to run programs that build strings, and it
 //! is deliberately the simplest thing that is correct while the memory model
 //! is being designed; see `docs/rfcs/0002-memory-model.md`.
@@ -16,8 +16,8 @@
 use super::encode::{Assembler, Cond, Label, Reg, Reference};
 use noto_runtime::{
     Routine, ASSERT_FAILURE_MESSAGE, ASSERT_FAILURE_STATUS, FALSE_TEXT, HEAP_CHUNK_SIZE,
-    OUT_OF_MEMORY_MESSAGE, OUT_OF_MEMORY_STATUS, STRING_DATA_OFFSET, STRING_LENGTH_OFFSET,
-    TRUE_TEXT,
+    INDEX_FAILURE_MESSAGE, INDEX_FAILURE_STATUS, OUT_OF_MEMORY_MESSAGE, OUT_OF_MEMORY_STATUS,
+    STRING_DATA_OFFSET, STRING_LENGTH_OFFSET, TRUE_TEXT,
 };
 use std::collections::HashMap;
 
@@ -59,6 +59,10 @@ pub struct RuntimeData {
     pub assert_message: u32,
     /// Its length.
     pub assert_message_len: u32,
+    /// Offset of the out-of-range index message.
+    pub index_message: u32,
+    /// Its length.
+    pub index_message_len: u32,
     /// Offset of the out-of-memory message.
     pub oom_message: u32,
     /// Its length.
@@ -83,6 +87,9 @@ pub fn append_data(rodata: &mut Vec<u8>) -> RuntimeData {
     let assert_message = rodata.len() as u32;
     rodata.extend_from_slice(ASSERT_FAILURE_MESSAGE.as_bytes());
 
+    let index_message = rodata.len() as u32;
+    rodata.extend_from_slice(INDEX_FAILURE_MESSAGE.as_bytes());
+
     let oom_message = rodata.len() as u32;
     rodata.extend_from_slice(OUT_OF_MEMORY_MESSAGE.as_bytes());
 
@@ -102,6 +109,8 @@ pub fn append_data(rodata: &mut Vec<u8>) -> RuntimeData {
         newline,
         assert_message,
         assert_message_len: ASSERT_FAILURE_MESSAGE.len() as u32,
+        index_message,
+        index_message_len: INDEX_FAILURE_MESSAGE.len() as u32,
         oom_message,
         oom_message_len: OUT_OF_MEMORY_MESSAGE.len() as u32,
         true_string,
@@ -158,6 +167,7 @@ pub fn emit(
     emit_string_concat(assembler, labels);
     emit_string_length(assembler, labels);
     emit_string_equals(assembler, labels);
+    emit_index_check(assembler, labels, data);
     emit_assert(assembler, labels, data);
 }
 
@@ -686,6 +696,30 @@ fn emit_string_equals(assembler: &mut Assembler, labels: &RuntimeLabels) {
     assembler.bind(different);
     assembler.mov_reg_imm64(Reg::Rax, 0);
     assembler.ret();
+}
+
+/// `index_check(index, length)`: ends the process when the index is outside
+/// `0..length`.
+///
+/// One unsigned comparison covers both ends: a negative index read as
+/// unsigned is enormous, so `index >= length` catches it too.
+fn emit_index_check(assembler: &mut Assembler, labels: &RuntimeLabels, data: &RuntimeData) {
+    begin(assembler, labels, Routine::IndexCheck);
+    prologue(assembler, 0);
+
+    let failed = assembler.label();
+    assembler.cmp(Reg::Rdi, Reg::Rsi);
+    assembler.jcc(Cond::AboveEq, failed);
+    epilogue(assembler);
+
+    assembler.bind(failed);
+    assembler.mov_reg_imm64(Reg::Rdi, STDERR);
+    assembler.lea_rip(Reg::Rsi, Reference::RoData(data.index_message));
+    assembler.mov_reg_imm64(Reg::Rdx, data.index_message_len as i64);
+    assembler.call(labels.get(Routine::Write));
+    assembler.mov_reg_imm64(Reg::Rdi, INDEX_FAILURE_STATUS as i64);
+    assembler.call(labels.get(Routine::Exit));
+    assembler.ud2();
 }
 
 /// `assert(condition)`: ends the process when the condition is false.

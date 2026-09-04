@@ -117,6 +117,13 @@ pub enum Routine {
     StringConcat,
     /// `string_length(string) -> length`.
     StringLength,
+    /// `index_check(index, length)`. Ends the process when the index is
+    /// outside `0..length`.
+    ///
+    /// Reading past a list would otherwise return whatever the allocator
+    /// last put there, which is the class of bug a language is supposed to
+    /// make impossible.
+    IndexCheck,
     /// `string_equals(left, right) -> bool`.
     ///
     /// Compares contents, not addresses. Two strings built different ways
@@ -150,6 +157,7 @@ impl Routine {
             StringConcat,
             StringLength,
             StringEquals,
+            IndexCheck,
             Assert,
             Newline,
         ]
@@ -175,6 +183,7 @@ impl Routine {
             StringConcat => "noto_rt_string_concat",
             StringLength => "noto_rt_string_length",
             StringEquals => "noto_rt_string_equals",
+            IndexCheck => "noto_rt_index_check",
             Assert => "noto_rt_assert",
             Newline => "noto_rt_newline",
         }
@@ -187,7 +196,7 @@ impl Routine {
             Start | PrintlnEmpty | Newline => 0,
             Exit | Alloc | PrintString | PrintlnString | PrintInt | PrintlnInt | PrintBool
             | PrintlnBool | IntToString | BoolToString | StringLength | Assert => 1,
-            StringConcat | StringEquals => 2,
+            StringConcat | StringEquals | IndexCheck => 2,
             Write => 3,
         }
     }
@@ -197,6 +206,15 @@ impl Routine {
         !matches!(self, Routine::Start | Routine::Exit)
     }
 }
+
+/// The text an out-of-range index writes before ending the process.
+pub const INDEX_FAILURE_MESSAGE: &str = "noto: index out of range\n";
+
+/// The status an out-of-range index ends the process with.
+///
+/// It is distinct from an assertion failure so that a test runner can tell a
+/// bad index from a failed expectation.
+pub const INDEX_FAILURE_STATUS: i32 = 102;
 
 /// The text a failed assertion writes before ending the process.
 pub const ASSERT_FAILURE_MESSAGE: &str = "noto: assertion failed\n";

@@ -804,6 +804,103 @@ fn a_stored_property_becomes_an_ordinary_field() {
     assert!(analysis.classes[0].properties.is_empty(), "nothing computed here");
 }
 
+// --- lists -------------------------------------------------------------------
+
+#[test]
+fn a_list_literal_takes_its_type_from_its_first_element() {
+    check_ok("fn main() {\n    val xs = [1, 2, 3]\n    println(xs[0])\n}\n");
+    check_ok("fn main() {\n    val xs = [\"a\", \"b\"]\n    println(xs[0])\n}\n");
+}
+
+#[test]
+fn every_element_must_fit_the_first() {
+    check_error(
+        "fn main() {\n    val xs = [1, \"two\"]\n}\n",
+        "this list holds `Int`",
+    );
+}
+
+#[test]
+fn an_empty_list_needs_a_declared_type() {
+    check_error("fn main() {\n    val xs = []\n}\n", "an empty list has no element type");
+    check_ok("fn main() {\n    val xs: [Int] = []\n    println(xs.length)\n}\n");
+}
+
+#[test]
+fn a_list_type_may_be_written_in_a_signature() {
+    check_ok(
+        "fn total(xs: [Int]): Int {\n    var sum = 0\n    for x in xs { sum += x }\n    return sum\n}\n         fn main() {\n    println(total([1, 2]))\n}\n",
+    );
+}
+
+#[test]
+fn indexing_produces_the_element_type() {
+    check_error(
+        "fn main() {\n    val xs = [1, 2]\n    val s: String = xs[0]\n}\n",
+        "expected `String`",
+    );
+}
+
+#[test]
+fn an_index_must_be_an_integer() {
+    check_error(
+        "fn main() {\n    val xs = [1, 2]\n    println(xs[\"first\"])\n}\n",
+        "expected `Int`",
+    );
+}
+
+#[test]
+fn only_a_list_can_be_indexed() {
+    check_error(
+        "fn main() {\n    val n = 1\n    println(n[0])\n}\n",
+        "a `Int` cannot be indexed",
+    );
+}
+
+#[test]
+fn an_element_may_be_assigned() {
+    check_ok("fn main() {\n    val xs = [1, 2]\n    xs[0] = 5\n    println(xs[0])\n}\n");
+}
+
+#[test]
+fn an_element_assignment_is_type_checked() {
+    check_error(
+        "fn main() {\n    val xs = [1, 2]\n    xs[0] = \"five\"\n}\n",
+        "expected `Int`",
+    );
+}
+
+#[test]
+fn a_list_may_hold_objects_and_lists() {
+    check_ok(
+        "class Point(val x: Int)\n         fn main() {\n    val ps = [Point(1), Point(2)]\n    println(ps[0].x)\n}\n",
+    );
+    check_ok(
+        "fn main() {\n    val grid = [[1, 2], [3]]\n    println(grid[0][1])\n}\n",
+    );
+}
+
+#[test]
+fn a_list_is_invariant_in_its_element() {
+    // A literal is built to fit what is expected of it, so this is fine.
+    check_ok("fn take(xs: [Any]) {}\nfn main() {\n    take([1, 2])\n}\n");
+
+    // A list that already holds `Int` is not a list of `Any`: writing an
+    // `Any` through the second would break the first.
+    check_error(
+        "fn take(xs: [Any]) {}\n         fn main() {\n    val xs = [1, 2]\n    take(xs)\n}\n",
+        "expected `[Any]`",
+    );
+}
+
+#[test]
+fn a_for_binds_the_element_type() {
+    check_error(
+        "fn main() {\n    for x in [1, 2] {\n        val s: String = x\n    }\n}\n",
+        "expected `String`",
+    );
+}
+
 // --- enums -----------------------------------------------------------------
 
 #[test]

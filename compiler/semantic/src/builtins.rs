@@ -33,6 +33,8 @@ pub enum Builtin {
     StringToString,
     /// `String.length: Int`
     StringLength,
+    /// `[T].length: Int`
+    ListLength,
     /// `assert(condition: Bool)`
     Assert,
 }
@@ -45,7 +47,7 @@ impl Builtin {
             PrintString | PrintInt | PrintBool => "print",
             PrintlnString | PrintlnInt | PrintlnBool | PrintlnEmpty => "println",
             IntToString | BoolToString | StringToString => "toString",
-            StringLength => "length",
+            StringLength | ListLength => "length",
             Assert => "assert",
         }
     }
@@ -57,7 +59,8 @@ impl Builtin {
             PrintString | PrintlnString => vec![store.string()],
             PrintInt | PrintlnInt => vec![store.int()],
             PrintBool | PrintlnBool | Assert => vec![store.bool()],
-            PrintlnEmpty | IntToString | BoolToString | StringToString | StringLength => Vec::new(),
+            PrintlnEmpty | IntToString | BoolToString | StringToString | StringLength
+            | ListLength => Vec::new(),
         }
     }
 
@@ -66,7 +69,7 @@ impl Builtin {
         use Builtin::*;
         match self {
             IntToString | BoolToString | StringToString => store.string(),
-            StringLength => store.int(),
+            StringLength | ListLength => store.int(),
             _ => store.unit(),
         }
     }
@@ -74,12 +77,12 @@ impl Builtin {
     /// Whether the builtin is called as a method on a receiver.
     pub fn is_method(self) -> bool {
         use Builtin::*;
-        matches!(self, IntToString | BoolToString | StringToString | StringLength)
+        matches!(self, IntToString | BoolToString | StringToString | StringLength | ListLength)
     }
 
     /// Whether the builtin is read as a property rather than called.
     pub fn is_property(self) -> bool {
-        matches!(self, Builtin::StringLength)
+        matches!(self, Builtin::StringLength | Builtin::ListLength)
     }
 }
 
@@ -106,6 +109,7 @@ pub fn member(store: &TypeStore, receiver: TypeId, name: &str) -> Option<Builtin
     match (ty, name) {
         (Type::String, "toString") => Some(Builtin::StringToString),
         (Type::String, "length") => Some(Builtin::StringLength),
+        (Type::List(_), "length") => Some(Builtin::ListLength),
         (Type::Primitive(Primitive::Bool), "toString") => Some(Builtin::BoolToString),
         (Type::Primitive(primitive), "toString") if primitive.is_integer() => {
             Some(Builtin::IntToString)

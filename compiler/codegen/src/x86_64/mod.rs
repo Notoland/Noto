@@ -475,6 +475,7 @@ fn routine_for(intrinsic: Intrinsic) -> Routine {
         Intrinsic::StringConcat => Routine::StringConcat,
         Intrinsic::StringLength => Routine::StringLength,
         Intrinsic::StringEquals => Routine::StringEquals,
+        Intrinsic::IndexCheck => Routine::IndexCheck,
         Intrinsic::Assert => Routine::Assert,
         Intrinsic::Exit => Routine::Exit,
     }

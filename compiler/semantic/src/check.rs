@@ -273,7 +273,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "declarations inside a function body are not supported yet",
                     )
-                    .with_primary(stmt.span, "not implemented in Noto 0.5")
+                    .with_primary(stmt.span, "not implemented in Noto 0.6")
                     .with_help("move the declaration to the top level of the file"),
                 );
                 self.store.unit()
@@ -357,7 +357,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this pattern is not supported in a binding yet",
                     )
-                    .with_primary(pattern.span, "not implemented in Noto 0.5")
+                    .with_primary(pattern.span, "not implemented in Noto 0.6")
                     .with_help("bind a name, a tuple of names, or `_`"),
                 );
             }
@@ -367,9 +367,15 @@ impl Checker<'_> {
     fn check_for(&mut self, pattern: &Pattern, iterable: &Expr, body: &Block) {
         let iterable_ty = self.check_expr(iterable);
 
-        // Ranges are the only iterable this compiler lowers so far.
+        // A range and a list are what this compiler can walk so far.
         let element = match &iterable.kind {
             ExprKind::Range { .. } => self.store.int(),
+            _ if matches!(self.store.get(iterable_ty), Type::List(_)) => {
+                match self.store.get(iterable_ty) {
+                    Type::List(element) => *element,
+                    _ => unreachable!("just matched"),
+                }
+            }
             _ if self.store.get(iterable_ty).is_error() => self.store.error(),
             _ => {
                 let rendered = self.store.render(iterable_ty);
@@ -378,7 +384,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         format!("cannot iterate over a `{rendered}` yet"),
                     )
-                    .with_primary(iterable.span, "not iterable in Noto 0.5")
+                    .with_primary(iterable.span, "not iterable in Noto 0.6")
                     .with_help("iterate over a range, as in `for i in 0..10`"),
                 );
                 self.store.error()
@@ -449,10 +455,12 @@ impl Checker<'_> {
                     let ty = self.check_expr_expecting(bound, int);
                     self.expect_assignable(ty, int, bound.span, None);
                 }
-                // Ranges exist only inside `for` and `when` in Noto 0.5; there
+                // Ranges exist only inside `for` and `when` in Noto 0.6; there
                 // is no first-class `Range` type to give them yet.
                 self.store.unit()
             }
+            ExprKind::ListLiteral(items) => self.check_list_literal(items, expr.span, expected),
+            ExprKind::Index { target, index } => self.check_index(target, index, expr.span),
             ExprKind::Tuple(items) => {
                 let types: Vec<TypeId> = items.iter().map(|item| self.check_expr(item)).collect();
                 if types.is_empty() {
@@ -467,7 +475,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this expression is not supported by this compiler yet",
                     )
-                    .with_primary(expr.span, "not implemented in Noto 0.5"),
+                    .with_primary(expr.span, "not implemented in Noto 0.6"),
                 );
                 self.store.error()
             }
@@ -491,6 +499,89 @@ impl Checker<'_> {
                         "`this` can only be used inside a method",
                     )
                     .with_primary(expr.span, "no receiver here"),
+                );
+                self.store.error()
+            }
+        }
+    }
+
+    /// Checks `[a, b, c]`.
+    ///
+    /// The element type comes from the first item, and every later one must
+    /// fit it. An empty list has nothing to infer from, so it takes its type
+    /// from where it is used and is an error where nothing expects one.
+    fn check_list_literal(
+        &mut self,
+        items: &[Expr],
+        span: Span,
+        expected: Option<TypeId>,
+    ) -> TypeId {
+        let hint = expected.and_then(|ty| match self.store.get(ty) {
+            Type::List(element) => Some(*element),
+            _ => None,
+        });
+
+        let Some((first, rest)) = items.split_first() else {
+            let Some(element) = hint else {
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::CANNOT_INFER,
+                        "an empty list has no element type",
+                    )
+                    .with_primary(span, "nothing here says what it holds")
+                    .with_help("write the type: `val xs: [Int] = []`"),
+                );
+                return self.store.error();
+            };
+            return self.store.intern(Type::List(element));
+        };
+
+        let element = match hint {
+            Some(element) => {
+                let found = self.check_expr_expecting(first, element);
+                self.expect_assignable(found, element, first.span, None);
+                element
+            }
+            None => self.check_expr(first),
+        };
+
+        for item in rest {
+            let found = self.check_expr_expecting(item, element);
+            if !self.store.is_assignable(found, element) {
+                let (found, element) = (self.store.render(found), self.store.render(element));
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::TYPE_MISMATCH,
+                        format!("this list holds `{element}`"),
+                    )
+                    .with_primary(item.span, format!("this is a `{found}`"))
+                    .with_secondary(first.span, "the first element decides the type"),
+                );
+            }
+        }
+
+        self.store.intern(Type::List(element))
+    }
+
+    /// Checks `xs[i]`.
+    fn check_index(&mut self, target: &Expr, index: &Expr, span: Span) -> TypeId {
+        let target_ty = self.check_expr(target);
+        let int = self.store.int();
+        let index_ty = self.check_expr_expecting(index, int);
+        self.expect_assignable(index_ty, int, index.span, None);
+
+        match self.store.get(target_ty) {
+            Type::List(element) => *element,
+            other if other.is_error() => self.store.error(),
+            _ => {
+                let rendered = self.store.render(target_ty);
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::TYPE_MISMATCH,
+                        format!("a `{rendered}` cannot be indexed"),
+                    )
+                    .with_primary(span, "only a list can")
+                    .with_note("strings are indexed with methods, not `[]`, until they are"),
                 );
                 self.store.error()
             }
@@ -779,7 +870,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "`in` is not supported outside a `when` arm yet",
                     )
-                    .with_primary(span, "not implemented in Noto 0.5"),
+                    .with_primary(span, "not implemented in Noto 0.6"),
                 );
                 bool_ty
             }
@@ -942,6 +1033,9 @@ impl Checker<'_> {
                     .with_help(format!("declare it as `var {name}` to allow reassignment")),
                 );
             }
+        } else if matches!(target.kind, ExprKind::Index { .. }) {
+            // An element of a list is a place; the list itself decides
+            // whether it may be written, and every list may be.
         } else if !matches!(self.resolutions.get(&target.id), Some(Resolution::Error)) {
             self.sink.emit(
                 Diagnostic::error(codes::NOT_ASSIGNABLE, "this cannot be assigned to")
@@ -1206,7 +1300,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this pattern is not supported by this compiler yet",
                     )
-                    .with_primary(pattern.span, "not implemented in Noto 0.5"),
+                    .with_primary(pattern.span, "not implemented in Noto 0.6"),
                 );
             }
         }
@@ -1366,7 +1460,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "explicit type arguments are not supported by this compiler yet",
                 )
-                .with_primary(expr.span, "not implemented in Noto 0.5"),
+                .with_primary(expr.span, "not implemented in Noto 0.6"),
             );
         }
 
@@ -1377,7 +1471,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "named arguments are not supported by this compiler yet",
                     )
-                    .with_primary(name.span, "not implemented in Noto 0.5")
+                    .with_primary(name.span, "not implemented in Noto 0.6")
                     .with_help("pass the arguments positionally"),
                 );
             }
@@ -1436,7 +1530,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "safe calls are not supported by this compiler yet",
                     )
-                    .with_primary(expr.span, "not implemented in Noto 0.5"),
+                    .with_primary(expr.span, "not implemented in Noto 0.6"),
                 );
                 return self.store.error();
             }
@@ -2049,7 +2143,7 @@ impl Checker<'_> {
                                 codes::UNSUPPORTED_CONSTRUCT,
                                 "safe property access is not supported by this compiler yet",
                             )
-                            .with_primary(expr.span, "not implemented in Noto 0.5"),
+                            .with_primary(expr.span, "not implemented in Noto 0.6"),
                         );
                         return self.store.error();
                     }
@@ -2084,7 +2178,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "safe field access is not supported by this compiler yet",
                     )
-                    .with_primary(expr.span, "not implemented in Noto 0.5"),
+                    .with_primary(expr.span, "not implemented in Noto 0.6"),
                 );
                 return self.store.error();
             }

@@ -245,6 +245,10 @@ impl TypeStore {
             (_, Type::Nullable(inner)) => self.is_assignable(from, *inner),
             // `Any` holds any non-null value.
             (_, Type::Any) => !from_ty.is_nullable(),
+            // A list is invariant in its element: a `[Int]` is not a
+            // `[Any]`, because writing through the second would break the
+            // first.
+            (Type::List(from_element), Type::List(to_element)) => from_element == to_element,
             (Type::Tuple(from_items), Type::Tuple(to_items)) => {
                 from_items.len() == to_items.len()
                     && from_items
@@ -321,6 +325,7 @@ impl TypeStore {
                     format!("{name}<{}>", args.join(", "))
                 }
             }
+            Type::List(element) => format!("[{}]", self.render(*element)),
             Type::Nullable(inner) => format!("{}?", self.render(*inner)),
             Type::Tuple(items) => {
                 let items: Vec<String> = items.iter().map(|i| self.render(*i)).collect();

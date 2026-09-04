@@ -126,6 +126,14 @@ impl Builder<'_> {
     /// The upper bound is evaluated once, before the loop, so a range whose end
     /// is a call does not call it on every iteration.
     fn lower_for(&mut self, pattern: &Pattern, iterable: &noto_ast::Expr, body: &Block) {
+        if matches!(
+            self.analysis.store.get(self.analysis.type_of(iterable.id)),
+            noto_types::Type::List(_)
+        ) {
+            self.lower_for_list(pattern, iterable, body);
+            return;
+        }
+
         let noto_ast::ExprKind::Range { start, end, inclusive } = &iterable.kind else {
             self.unsupported(iterable.span, "iterating over this value");
             return;
@@ -152,6 +160,137 @@ impl Builder<'_> {
         };
 
         self.lower_for_with_slot(counter_slot, start_value, bound_slot, *inclusive, body, span);
+    }
+
+    /// Lowers `for x in xs` over a list.
+    ///
+    /// The list is evaluated once into a slot, and so is its length: a body
+    /// that reassigns the binding it walked cannot change what is walked, and
+    /// the length is read before the first element rather than at every step.
+    fn lower_for_list(
+        &mut self,
+        pattern: &Pattern,
+        iterable: &noto_ast::Expr,
+        body: &Block,
+    ) {
+        let span = iterable.span;
+        let element_ty = match self.analysis.store.get(self.analysis.type_of(iterable.id)) {
+            noto_types::Type::List(element) => {
+                crate::lower_type(&self.analysis.store, *element)
+            }
+            _ => {
+                self.unsupported(span, "iterating over this value");
+                return;
+            }
+        };
+
+        let list_slot = self.add_temp_slot("for$list", IrType::Ptr);
+        let list = self.lower_expr(iterable);
+        self.push(InstKind::StoreLocal { slot: list_slot, value: list }, span);
+
+        let list_value =
+            self.emit_value(IrType::Ptr, span, |dest| InstKind::LoadLocal { dest, slot: list_slot });
+        let length = self.emit_value(IrType::I64, span, |dest| InstKind::Load {
+            dest,
+            address: list_value,
+            offset: 0,
+        });
+        let bound_slot = self.add_temp_slot("for$end", IrType::I64);
+        self.push(InstKind::StoreLocal { slot: bound_slot, value: length }, span);
+
+        let index_slot = self.add_temp_slot("for$i", IrType::I64);
+        self.push(
+            InstKind::StoreLocal {
+                slot: index_slot,
+                value: Operand::Const(Const::Int { value: 0, ty: IrType::I64 }),
+            },
+            span,
+        );
+
+        let test = self.new_block("for_test");
+        let body_block = self.new_block("for_body");
+        let step = self.new_block("for_step");
+        let exit = self.new_block("for_exit");
+
+        self.set_terminator(Terminator::Jump(test));
+        self.switch_to(test);
+        let index = self.emit_value(IrType::I64, span, |dest| InstKind::LoadLocal {
+            dest,
+            slot: index_slot,
+        });
+        let bound = self.emit_value(IrType::I64, span, |dest| InstKind::LoadLocal {
+            dest,
+            slot: bound_slot,
+        });
+        let condition = self.emit_value(IrType::Bool, span, |dest| InstKind::Binary {
+            dest,
+            op: BinOp::SLt,
+            left: index,
+            right: bound,
+        });
+        self.set_terminator(Terminator::Branch {
+            condition,
+            then_block: body_block,
+            else_block: exit,
+        });
+
+        self.switch_to(body_block);
+        // The element is read here rather than in the test, so an empty list
+        // never reads past its length.
+        if let Some(slot) = self.pattern_slot(pattern) {
+            let list_value = self.emit_value(IrType::Ptr, span, |dest| InstKind::LoadLocal {
+                dest,
+                slot: list_slot,
+            });
+            let index = self.emit_value(IrType::I64, span, |dest| InstKind::LoadLocal {
+                dest,
+                slot: index_slot,
+            });
+            let scaled = self.emit_value(IrType::I64, span, |dest| InstKind::Binary {
+                dest,
+                op: BinOp::Mul,
+                left: index,
+                right: Operand::Const(Const::Int {
+                    value: crate::FIELD_SIZE as i128,
+                    ty: IrType::I64,
+                }),
+            });
+            let address = self.emit_value(IrType::Ptr, span, |dest| InstKind::Binary {
+                dest,
+                op: BinOp::Add,
+                left: list_value,
+                right: scaled,
+            });
+            let value = self.emit_value(element_ty, span, |dest| InstKind::Load {
+                dest,
+                address,
+                offset: crate::FIELD_SIZE,
+            });
+            self.push(InstKind::StoreLocal { slot, value }, span);
+        }
+
+        self.loops.push(LoopTargets { continue_block: step, break_block: exit });
+        self.lower_block(body);
+        self.loops.pop();
+        if !self.current_block_is_terminated() {
+            self.set_terminator(Terminator::Jump(step));
+        }
+
+        self.switch_to(step);
+        let index = self.emit_value(IrType::I64, span, |dest| InstKind::LoadLocal {
+            dest,
+            slot: index_slot,
+        });
+        let next = self.emit_value(IrType::I64, span, |dest| InstKind::Binary {
+            dest,
+            op: BinOp::Add,
+            left: index,
+            right: Operand::Const(Const::Int { value: 1, ty: IrType::I64 }),
+        });
+        self.push(InstKind::StoreLocal { slot: index_slot, value: next }, span);
+        self.set_terminator(Terminator::Jump(test));
+
+        self.switch_to(exit);
     }
 
     fn lower_for_with_slot(
