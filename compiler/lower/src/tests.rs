@@ -595,3 +595,74 @@ fn string_inequality_negates_the_comparison() {
     assert!(ir.contains("string_equals"), "{ir}");
     assert!(ir.contains("not"), "{ir}");
 }
+
+// --- body fields and properties --------------------------------------------
+
+#[test]
+fn a_class_with_body_fields_is_built_by_its_initialiser() {
+    let program = lower_source(
+        "class Person(val name: String) {\n    val greeting: String = \"hi\"\n}\n\
+         fn make(): Person = Person(\"a\")\n",
+    );
+    assert!(program.function_named("Person.<init>").is_some(), "{program}");
+
+    let make = program.function_named("make").expect("the function").to_string();
+    assert!(make.contains("call fn"), "construction is a call to it: {make}");
+    assert!(!make.contains("alloc"), "the initialiser allocates, not the caller: {make}");
+}
+
+#[test]
+fn an_initialiser_stores_the_parameters_then_the_body_fields() {
+    let program = lower_source(
+        "class Person(val name: String) {\n    val greeting: String = \"hi\"\n}\n",
+    );
+    let init = program.function_named("Person.<init>").expect("the function").to_string();
+    assert!(init.contains("alloc 16"), "two fields, two words: {init}");
+    let parameter = init.find("store [%0+0]").expect("the parameter is stored first");
+    let body_field = init.find("store [%0+8]").expect("then the body field");
+    assert!(parameter < body_field, "in declaration order: {init}");
+}
+
+#[test]
+fn a_class_with_no_body_fields_still_allocates_at_the_construction_site() {
+    let ir = function_ir(
+        "class Point(val x: Int)\nfn make(): Point = Point(1)\n",
+        "make",
+    );
+    assert!(ir.contains("alloc"), "there is no initialiser to call: {ir}");
+}
+
+#[test]
+fn reading_a_property_calls_its_getter() {
+    let ir = function_ir(
+        "class Rect(val w: Int, val h: Int) {\n    val area: Int { get = this.w * this.h }\n}\n\
+         fn area_of(r: Rect): Int = r.area\n",
+        "area_of",
+    );
+    assert!(ir.contains("call fn"), "{ir}");
+    assert!(!ir.contains("load [%"), "nothing is stored to read: {ir}");
+}
+
+#[test]
+fn writing_a_property_calls_its_setter() {
+    let program = lower_source(
+        "class Box(val n: Int) {\n    var stored: Int = 0\n\
+             var value: Int {\n        get = this.stored\n        set { this.stored = value }\n    }\n}\n\
+         fn put(b: Box) {\n    b.value = 5\n}\n",
+    );
+    let put = program.function_named("put").expect("the function").to_string();
+    assert!(put.contains("call fn"), "{put}");
+    assert!(program.function_named("Box.set:value").is_some(), "{program}");
+}
+
+#[test]
+fn a_compound_property_assignment_reads_through_the_getter_first() {
+    let program = lower_source(
+        "class Box(val n: Int) {\n    var stored: Int = 0\n\
+             var value: Int {\n        get = this.stored\n        set { this.stored = value }\n    }\n}\n\
+         fn bump(b: Box) {\n    b.value += 1\n}\n",
+    );
+    let bump = program.function_named("bump").expect("the function").to_string();
+    assert_eq!(bump.matches("call fn").count(), 2, "one get, one set: {bump}");
+    assert_eq!(bump.matches("load $0").count(), 1, "the receiver is read once: {bump}");
+}

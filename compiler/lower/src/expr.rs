@@ -326,6 +326,10 @@ impl Builder<'_> {
         op: Option<BinaryOp>,
         span: Span,
     ) -> Operand {
+        if let Some(Resolution::Property { class, index }) = self.analysis.resolution(target.id) {
+            return self.lower_property_assign(class, index, target, value, op, span);
+        }
+
         if let Some(Resolution::Field { class, index }) = self.analysis.resolution(target.id) {
             return self.lower_field_assign(class, index, target, value, op, span);
         }
@@ -790,6 +794,75 @@ impl Builder<'_> {
         }
     }
 
+    /// Lowers `r.width = v` where `width` is a property: the receiver is
+    /// evaluated once, then the setter is called with it and the value.
+    ///
+    /// A compound assignment reads through the getter first, so `r.width += 1`
+    /// is `set(r, get(r) + 1)` — one evaluation of the receiver, in the order
+    /// it was written.
+    fn lower_property_assign(
+        &mut self,
+        class: noto_semantic::ClassId,
+        index: u32,
+        target: &Expr,
+        value: &Expr,
+        op: Option<BinaryOp>,
+        span: Span,
+    ) -> Operand {
+        let ExprKind::Member { receiver, .. } = &target.kind else {
+            return self.unsupported(target.span, "assigning to this target");
+        };
+
+        let property = &self.analysis.class(class).properties[index as usize];
+        let (getter, setter_id, property_ty) = (property.getter, property.setter, property.ty);
+        let Some(setter_id) = setter_id else {
+            return self.unsupported(target.span, "assigning to this property");
+        };
+        let (Some(setter), Some(getter)) = (self.func_id_of(setter_id), self.func_id_of(getter))
+        else {
+            return self.unsupported(target.span, "assigning to this property");
+        };
+
+        let ty = crate::lower_type(&self.analysis.store, property_ty);
+        let object = self.lower_expr(receiver);
+
+        let stored = match op {
+            None => self.lower_expr(value),
+            Some(op) => {
+                let current = self.emit_value(ty, span, |dest| InstKind::Call {
+                    dest: Some(dest),
+                    callee: getter,
+                    arguments: vec![object.clone()],
+                });
+                let right = self.lower_expr(value);
+
+                if op == BinaryOp::Add && ty == IrType::Str {
+                    self.emit_value(IrType::Str, span, |dest| InstKind::Intrinsic {
+                        dest: Some(dest),
+                        which: Intrinsic::StringConcat,
+                        arguments: vec![current, right],
+                    })
+                } else {
+                    let Some(ir_op) = binary_op(op, ty) else {
+                        return self.unsupported(span, "this compound assignment");
+                    };
+                    self.emit_value(ty, span, |dest| InstKind::Binary {
+                        dest,
+                        op: ir_op,
+                        left: current,
+                        right,
+                    })
+                }
+            }
+        };
+
+        self.push(
+            InstKind::Call { dest: None, callee: setter, arguments: vec![object, stored] },
+            span,
+        );
+        Operand::Const(Const::Unit)
+    }
+
     /// Lowers `p.x = v` and `p.x += v`.
     ///
     /// The receiver is evaluated once. That matters for a compound
@@ -936,6 +1009,20 @@ impl Builder<'_> {
         let values: Vec<Operand> =
             call.arguments.iter().map(|argument| self.lower_expr(&argument.value)).collect();
 
+        // A class whose body declares initialised fields is built by its
+        // synthesised `<init>`, so the initialisers exist once rather than at
+        // every construction site.
+        if let Some(init) = self.analysis.class(class).init {
+            let Some(callee) = self.func_id_of(init) else {
+                return self.unsupported(expr.span, "constructing this class");
+            };
+            return self.emit_value(IrType::Ptr, expr.span, |dest| InstKind::Call {
+                dest: Some(dest),
+                callee,
+                arguments: values,
+            });
+        }
+
         let size = crate::object_size(self.analysis.class(class).fields.len());
         let object = self.emit_value(IrType::Ptr, expr.span, |dest| InstKind::Alloc { dest, size });
 
@@ -976,6 +1063,22 @@ impl Builder<'_> {
                 expr.span,
             );
             return object;
+        }
+
+        // Reading a property calls its getter, which takes the receiver.
+        if let Some(Resolution::Property { class, index }) = self.analysis.resolution(expr.id) {
+            let property = &self.analysis.class(class).properties[index as usize];
+            let (getter, ty) = (property.getter, property.ty);
+            let result = crate::lower_type(&self.analysis.store, ty);
+            let Some(callee) = self.func_id_of(getter) else {
+                return self.unsupported(expr.span, "reading this property");
+            };
+            let object = self.lower_expr(receiver);
+            return self.emit_value(result, expr.span, |dest| InstKind::Call {
+                dest: Some(dest),
+                callee,
+                arguments: vec![object],
+            });
         }
 
         if let Some(Resolution::Field { class, index }) = self.analysis.resolution(expr.id) {

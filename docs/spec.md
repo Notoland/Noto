@@ -115,11 +115,41 @@ That is why `struct` and the `data` flavours are still rejected: they promise
 value semantics, copied on assignment, and giving them reference semantics
 under a keyword that says otherwise would be worse than refusing them.
 
-Not implemented for classes: properties with `get`/`set`, fields declared in
-the class body, default values for fields, inheritance, interfaces, generics,
-method values, `data class` equality and printing. An object has no
-`toString`, so `println(p)` does not compile — print its fields, or give the
-class a method that builds a `String`.
+A field may instead be declared in the class body, where it carries its own
+initialiser rather than receiving an argument:
+
+```noto
+class Person(val first: String, val last: String) {
+    val full: String = first + " " + last
+}
+```
+
+Such an initialiser runs when the object is built, in declaration order, and
+may read the constructor's parameters — but not `this`, which does not exist
+until the object does. A field declared in the body without an initialiser is
+an error: there would be nothing to put in it.
+
+A **property** is read like a field but computed by its accessors:
+
+```noto
+class Rect(val width: Int, val height: Int) {
+    val area: Int { get = this.width * this.height }
+}
+```
+
+A property with only an initialiser and no accessor body is simply a stored
+field — the default accessors are what a field read and write already are. An
+accessor with a body makes the property computed: reading calls its `get`,
+assigning calls its `set`, and nothing is stored. The value being assigned
+arrives in the setter under the name `value`. A `val` property may not have a
+setter, and a property with custom accessors may not also have an initialiser:
+that value could only be reached through storage the accessors cannot name.
+
+Not implemented for classes: default values for constructor parameters,
+inheritance, interfaces, generics, method values, safe property access
+(`p?.x`), `data class` equality and printing. An object has no `toString`, so
+`println(p)` does not compile — print its fields, or give the class a method
+that builds a `String`.
 
 ## Enums
 

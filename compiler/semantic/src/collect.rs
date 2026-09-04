@@ -190,18 +190,6 @@ impl Checker<'_> {
             self.sink.emit(unsupported("base classes and interfaces", base.span));
             return;
         }
-        if let Some(property) = decl.properties.first() {
-            self.sink.emit(unsupported("properties", property.span));
-            return;
-        }
-        if let Some(field) = decl.fields.first() {
-            self.sink.emit(
-                unsupported("fields declared in the class body", field.span).with_help(
-                    "declare them as constructor parameters: `class Point(val x: Int)`",
-                ),
-            );
-            return;
-        }
 
         let name = decl.name.name.clone();
         if let Some(existing) = self.own_type(&name) {
@@ -226,7 +214,10 @@ impl Checker<'_> {
             module: self.current_module,
             is_exported: item.modifiers.is_exported,
             fields: Vec::new(),
+            primary_count: 0,
+            properties: Vec::new(),
             methods: Vec::new(),
+            init: None,
             ty,
             def,
             span: item.span,
@@ -254,7 +245,7 @@ impl Checker<'_> {
                 self.sink.emit(
                     Diagnostic::error(
                         codes::UNSUPPORTED_CONSTRUCT,
-                        "default values for fields are not supported by this compiler yet",
+                        "default values for constructor parameters are not supported by this compiler yet",
                     )
                     .with_primary(default.span, "not implemented in Noto 0.5"),
                 );
@@ -295,16 +286,348 @@ impl Checker<'_> {
                 name,
                 ty,
                 is_mutable: param.kind == noto_ast::LetKind::Var,
+                // The argument a construction call passes initialises it.
+                initializer: None,
                 span: param.span,
+            });
+        }
+        let primary_count = fields.len() as u32;
+
+        // A field declared in the body has no argument to receive, so it must
+        // carry its own initialiser; without one there is nothing sound to put
+        // in the slot.
+        for field in &decl.fields {
+            if field.default.is_none() {
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::CANNOT_INFER,
+                        format!("field `{}` has nothing to initialise it", field.name.name),
+                    )
+                    .with_primary(field.span, "no value here")
+                    .with_help(format!(
+                        "give it one — `val {}: .. = ..` — or make it a constructor parameter",
+                        field.name.name
+                    )),
+                );
+            }
+
+            let ty = match &field.ty {
+                Some(ty) => self.resolve_type(ty),
+                None => {
+                    self.sink.emit(
+                        Diagnostic::error(
+                            codes::CANNOT_INFER,
+                            format!("field `{}` needs a declared type", field.name.name),
+                        )
+                        .with_primary(field.span, "no type to infer from here"),
+                    );
+                    self.store.error()
+                }
+            };
+
+            let name = field.name.name.clone();
+            if let Some(previous) = fields.iter().find(|seen| seen.name == name) {
+                let previous = previous.span;
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::DUPLICATE_NAME,
+                        format!("`{name}` is declared more than once in `{}`", decl.name.name),
+                    )
+                    .with_primary(field.name.span, "redeclared here")
+                    .with_secondary(previous, "first declared here"),
+                );
+                continue;
+            }
+
+            fields.push(FieldInfo {
+                name,
+                ty,
+                is_mutable: field.kind == noto_ast::LetKind::Var,
+                initializer: field.default.as_ref().map(|default| default.id),
+                span: field.span,
             });
         }
 
         self.classes[id.0 as usize].fields = fields;
+        self.classes[id.0 as usize].primary_count = primary_count;
+
+        self.collect_properties(id, decl);
+        self.collect_init(id, decl);
 
         for item in &decl.methods {
             let ItemKind::Fn(function) = &item.kind else { continue };
             self.collect_method(id, item, function);
         }
+    }
+
+    /// Collects a class's properties, which come in two kinds.
+    ///
+    /// One written with only body-less accessors and an initialiser is stored:
+    /// it becomes an ordinary field, and the default accessors are what a
+    /// field read and write already are. Any accessor with a body makes the
+    /// property computed: a read calls its getter, a write its setter, and
+    /// nothing is stored — which is also why an initialiser on one is refused:
+    /// a custom accessor has no way to reach storage the syntax never names.
+    fn collect_properties(&mut self, class: ClassId, decl: &TypeDeclItem) {
+        for property in &decl.properties {
+            let ty = match &property.ty {
+                Some(ty) => self.resolve_type(ty),
+                None => {
+                    self.sink.emit(
+                        Diagnostic::error(
+                            codes::CANNOT_INFER,
+                            format!("property `{}` needs a declared type", property.name.name),
+                        )
+                        .with_primary(property.span, "no type to infer from here"),
+                    );
+                    self.store.error()
+                }
+            };
+
+            let name = property.name.name.clone();
+            let class_name = self.classes[class.0 as usize].name.clone();
+            if let Some(previous) = self.classes[class.0 as usize]
+                .fields
+                .iter()
+                .find(|field| field.name == name)
+            {
+                let previous = previous.span;
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::DUPLICATE_NAME,
+                        format!("`{class_name}` already has a field named `{name}`"),
+                    )
+                    .with_primary(property.name.span, "declared again here")
+                    .with_secondary(previous, "the field is declared here"),
+                );
+                continue;
+            }
+            if let Some(previous) = self.classes[class.0 as usize]
+                .properties
+                .iter()
+                .find(|seen| seen.name == name)
+            {
+                let previous = previous.span;
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::DUPLICATE_NAME,
+                        format!("`{class_name}.{name}` is declared more than once"),
+                    )
+                    .with_primary(property.name.span, "redeclared here")
+                    .with_secondary(previous, "first declared here"),
+                );
+                continue;
+            }
+
+            let custom = |accessor: &Option<noto_ast::PropertyAccessor>| {
+                accessor.as_ref().is_some_and(|accessor| accessor.body.is_some())
+            };
+            let is_computed =
+                custom(&property.getter) || custom(&property.setter);
+
+            if !is_computed {
+                // Stored: the accessors, if written at all, ask for the
+                // default implementations, which is what a field already is.
+                let Some(default) = &property.default else {
+                    self.sink.emit(
+                        Diagnostic::error(
+                            codes::CANNOT_INFER,
+                            format!(
+                                "property `{name}` has nothing to return: give it an initialiser or a `get` body",
+                            ),
+                        )
+                        .with_primary(property.span, "no initialiser and no accessor body")
+                        .with_help(format!("write `val {name}: .. = ..`, or add `get = ..`")),
+                    );
+                    continue;
+                };
+                self.classes[class.0 as usize].fields.push(FieldInfo {
+                    name: name.clone(),
+                    ty,
+                    is_mutable: property.kind == noto_ast::LetKind::Var,
+                    initializer: Some(default.id),
+                    span: property.span,
+                });
+                continue;
+            }
+
+            if property.default.is_some() {
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::UNSUPPORTED_CONSTRUCT,
+                        "a property with custom accessors cannot also have an initialiser",
+                    )
+                    .with_primary(
+                        property.default.as_ref().expect("just checked").span,
+                        "this value could only be reached through storage the accessors cannot name",
+                    )
+                    .with_help("compute it inside `get` instead"),
+                );
+                continue;
+            }
+
+            let Some(getter) = property.getter.as_ref().filter(|get| get.body.is_some()) else {
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::CANNOT_INFER,
+                        format!("property `{name}` must be readable: give its `get` a body"),
+                    )
+                    .with_primary(property.span, "no `get` body here"),
+                );
+                continue;
+            };
+
+            let is_mutable = property.kind == noto_ast::LetKind::Var;
+            // An accessor follows its class, the way a method does: exporting
+            // the class exports the property it can be read through.
+            let is_exported = self.classes[class.0 as usize].is_exported;
+            let getter_fn =
+                self.collect_accessor(class, &class_name, &name, ty, getter, false, is_exported);
+            let setter_fn = match &property.setter {
+                Some(setter) if setter.body.is_some() => {
+                    if !is_mutable {
+                        self.sink.emit(
+                            Diagnostic::error(
+                                codes::REASSIGNED_VAL,
+                                format!("a `val` property cannot have a setter"),
+                            )
+                            .with_primary(setter.span, "this setter can never run")
+                            .with_secondary(property.span, "declared `val` here"),
+                        );
+                        None
+                    } else {
+                        Some(self.collect_accessor(
+                            class,
+                            &class_name,
+                            &name,
+                            ty,
+                            setter,
+                            true,
+                            is_exported,
+                        ))
+                    }
+                }
+                // A body-less setter alongside a custom getter has no storage
+                // to default to; a `var` computed property simply has no
+                // setter until one is written.
+                Some(setter) => {
+                    self.sink.emit(
+                        Diagnostic::error(
+                            codes::UNSUPPORTED_CONSTRUCT,
+                            "a default `set` needs stored storage, and this property is computed",
+                        )
+                        .with_primary(setter.span, "give this `set` a body, or remove it"),
+                    );
+                    None
+                }
+                None => None,
+            };
+
+            self.classes[class.0 as usize].properties.push(crate::analysis::PropertyInfo {
+                name,
+                ty,
+                is_mutable,
+                getter: getter_fn,
+                setter: setter_fn,
+                span: property.span,
+            });
+        }
+    }
+
+    /// Records a `get` or `set` accessor as a function taking the receiver
+    /// first, the way a method is one. A setter takes the incoming value
+    /// under the conventional name `value` after it.
+    fn collect_accessor(
+        &mut self,
+        class: ClassId,
+        class_name: &str,
+        property: &str,
+        ty: TypeId,
+        accessor: &noto_ast::PropertyAccessor,
+        is_setter: bool,
+        is_exported: bool,
+    ) -> FunctionId {
+        let id = FunctionId(self.functions.len() as u32);
+        let unit = self.store.unit();
+        self.functions.push(FunctionInfo {
+            name: format!(
+                "{class_name}.{}:{property}",
+                if is_setter { "set" } else { "get" }
+            ),
+            module: self.current_module,
+            is_exported,
+            parameters: Vec::new(),
+            result: if is_setter { unit } else { ty },
+            locals: Vec::new(),
+            body: accessor.body.as_ref().map(|body| body.id),
+            init_of: None,
+            is_async: false,
+            span: accessor.span,
+        });
+
+        let previous_function = self.current_function.replace(id);
+        self.scopes.push();
+        let receiver_ty = self.classes[class.0 as usize].ty;
+        let receiver =
+            self.declare_local(crate::RECEIVER_NAME, receiver_ty, false, true, accessor.span);
+        self.functions[id.0 as usize].parameters.push(receiver);
+        if is_setter {
+            let value = self.declare_local(crate::SETTER_VALUE_NAME, ty, false, true, accessor.span);
+            self.functions[id.0 as usize].parameters.push(value);
+        }
+        self.scopes.pop();
+        self.current_function = previous_function;
+        id
+    }
+
+    /// Synthesises `Class.<init>`, the function a construction call becomes
+    /// when any field carries an initialiser.
+    ///
+    /// Its parameters are the primary constructor's, so an initialiser may
+    /// read them — `class Person(val name: String) { val greeting = .. }`.
+    /// `this` is deliberately not in scope: the object does not exist until
+    /// the function allocates it.
+    fn collect_init(&mut self, class: ClassId, decl: &TypeDeclItem) {
+        if !self.classes[class.0 as usize]
+            .fields
+            .iter()
+            .any(|field| field.initializer.is_some())
+        {
+            return;
+        }
+
+        let class_name = self.classes[class.0 as usize].name.clone();
+        let class_ty = self.classes[class.0 as usize].ty;
+        let is_exported = self.classes[class.0 as usize].is_exported;
+
+        let id = FunctionId(self.functions.len() as u32);
+        self.functions.push(FunctionInfo {
+            name: format!("{class_name}.<init>"),
+            module: self.current_module,
+            is_exported,
+            parameters: Vec::new(),
+            result: class_ty,
+            locals: Vec::new(),
+            body: None,
+            init_of: Some(class),
+            is_async: false,
+            span: self.classes[class.0 as usize].span,
+        });
+
+        let previous_function = self.current_function.replace(id);
+        self.scopes.push();
+        for param in &decl.primary_params {
+            let ty = match &param.ty {
+                Some(ty) => self.resolve_type(ty),
+                None => self.store.error(),
+            };
+            let local = self.declare_local(&param.name.name, ty, false, true, param.span);
+            self.functions[id.0 as usize].parameters.push(local);
+        }
+        self.scopes.pop();
+        self.current_function = previous_function;
+
+        self.classes[class.0 as usize].init = Some(id);
     }
 
     /// Records a method's signature as a function taking the receiver first.
@@ -378,6 +701,7 @@ impl Checker<'_> {
             result,
             locals: Vec::new(),
             body: function.body.as_ref().map(|body| body.id),
+            init_of: None,
             is_async: function.is_async,
             span: item.span,
         });
@@ -464,6 +788,8 @@ impl Checker<'_> {
                     name: field.name.name.clone(),
                     ty,
                     is_mutable: false,
+                    // A case's data is initialised by the values passed to it.
+                    initializer: None,
                     span: field.span,
                 });
             }
@@ -537,6 +863,7 @@ impl Checker<'_> {
             result,
             locals: Vec::new(),
             body: function.body.as_ref().map(|body| body.id),
+            init_of: None,
             is_async: function.is_async,
             span: item.span,
         });
@@ -672,6 +999,7 @@ impl Checker<'_> {
             result: unit,
             locals: Vec::new(),
             body: Some(test.body.id),
+            init_of: None,
             is_async: false,
             span: test.name_span,
         });

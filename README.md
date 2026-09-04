@@ -29,7 +29,7 @@ source becomes a native Linux x86-64 executable that you can run.
 
 What that means in practice:
 
-- **444 tests pass, zero failures, zero warnings.**
+- **465 tests pass, zero failures, zero warnings.**
 - Constructs that are not implemented yet are **rejected with a clear error**,
   never silently accepted and miscompiled.
 - The parser covers the whole language; the back end does not yet.

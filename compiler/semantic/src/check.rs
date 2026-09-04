@@ -31,6 +31,8 @@ impl Checker<'_> {
                         let Some(id) = self.function_with_body(body.id) else { continue };
                         self.check_function_body(id, function, body);
                     }
+                    self.check_accessor_bodies(decl);
+                    self.check_field_initializers(decl);
                 }
                 _ => {}
             }
@@ -93,6 +95,91 @@ impl Checker<'_> {
             }
             self.sink.emit(diagnostic);
         }
+    }
+
+    /// Checks the bodies of a class's property accessors.
+    ///
+    /// An accessor is a function taking the receiver, so this is the ordinary
+    /// body check; what it adds is that a getter must produce the property's
+    /// type and a setter produces nothing.
+    fn check_accessor_bodies(&mut self, decl: &noto_ast::TypeDeclItem) {
+        for property in &decl.properties {
+            for accessor in [&property.getter, &property.setter].into_iter().flatten() {
+                let Some(body) = &accessor.body else { continue };
+                let Some(id) = self.function_with_body(body.id) else { continue };
+                self.check_accessor_body(id, body, accessor.span);
+            }
+        }
+    }
+
+    fn check_accessor_body(&mut self, id: FunctionId, body: &Block, span: Span) {
+        let info = &self.functions[id.0 as usize];
+        let result = info.result;
+        let parameters = info.parameters.clone();
+
+        self.current_function = Some(id);
+        self.expected_result = result;
+        self.scopes.push();
+        for local in &parameters {
+            let name = self.locals[local.0 as usize].name.clone();
+            self.scopes.declare(name, Resolution::Local(*local));
+        }
+        let body_type = self.check_block(body);
+        self.scopes.pop();
+        self.current_function = None;
+
+        let unit = self.store.unit();
+        if result != unit && !self.store.is_assignable(body_type, result) {
+            let tail = body.tail_expr().map(|expr| expr.span).unwrap_or(span);
+            let (expected, found) = (self.store.render(result), self.store.render(body_type));
+            self.sink.emit(
+                Diagnostic::error(
+                    codes::MISSING_RETURN,
+                    format!("this `get` must produce a `{expected}`"),
+                )
+                .with_primary(tail, format!("found `{found}`")),
+            );
+        }
+    }
+
+    /// Checks the initialisers of the fields declared in a class body.
+    ///
+    /// They run inside the synthesised `Class.<init>`, whose parameters are
+    /// the primary constructor's — so an initialiser may read them. `this` is
+    /// deliberately not in scope: the object does not exist yet.
+    fn check_field_initializers(&mut self, decl: &noto_ast::TypeDeclItem) {
+        let Some(id) = self.own_type(&decl.name.name) else { return };
+        let Some(init) = self.classes[id.0 as usize].init else { return };
+
+        let parameters = self.functions[init.0 as usize].parameters.clone();
+        self.current_function = Some(init);
+        self.expected_result = self.store.unit();
+        self.scopes.push();
+        for local in &parameters {
+            let name = self.locals[local.0 as usize].name.clone();
+            self.scopes.declare(name, Resolution::Local(*local));
+        }
+
+        let initializers: Vec<(usize, noto_span::Span)> = self.classes[id.0 as usize]
+            .fields
+            .iter()
+            .enumerate()
+            .filter(|(_, field)| field.initializer.is_some())
+            .map(|(index, field)| (index, field.span))
+            .collect();
+
+        for (index, _) in initializers {
+            let expected = self.classes[id.0 as usize].fields[index].ty;
+            let node = self.classes[id.0 as usize].fields[index]
+                .initializer
+                .expect("filtered above");
+            let Some(expr) = find_expr(decl, node) else { continue };
+            let found = self.check_expr_expecting(expr, expected);
+            self.expect_assignable(found, expected, expr.span, None);
+        }
+
+        self.scopes.pop();
+        self.current_function = None;
     }
 
     fn check_test_body(&mut self, id: FunctionId, body: &Block) {
@@ -813,6 +900,27 @@ impl Checker<'_> {
                     diagnostic
                         .with_secondary(declared_at, "declared with `val` here")
                         .with_help(format!("declare it with `var {name}` to allow reassignment"))
+                };
+                self.sink.emit(diagnostic);
+            }
+        } else if let Some(Resolution::Property { class, index }) =
+            self.resolutions.get(&target.id).copied()
+        {
+            let class = &self.classes[class.0 as usize];
+            let property = &class.properties[index as usize];
+            if property.setter.is_none() {
+                let (class_name, name, declared_at) =
+                    (class.name.clone(), property.name.clone(), property.span);
+                let mut diagnostic = Diagnostic::error(
+                    codes::REASSIGNED_VAL,
+                    format!("cannot assign to `{class_name}.{name}`"),
+                )
+                .with_primary(span, "assigned here")
+                .with_secondary(declared_at, "declared here");
+                diagnostic = if property.is_mutable {
+                    diagnostic.with_help("give it a `set` with a body")
+                } else {
+                    diagnostic.with_help(format!("declare it as `var {name}` and give it a `set`"))
                 };
                 self.sink.emit(diagnostic);
             }
@@ -1782,9 +1890,13 @@ impl Checker<'_> {
 
         let class = &self.classes[id.0 as usize];
         let (name, ty) = (class.name.clone(), class.ty);
+        // Only the primary constructor's parameters are passed. A field
+        // declared in the class body carries its own initialiser, so there is
+        // no argument for it.
         let fields: Vec<(String, TypeId, Span)> = class
             .fields
             .iter()
+            .take(class.primary_count as usize)
             .map(|field| (field.name.clone(), field.ty, field.span))
             .collect();
 
@@ -1929,6 +2041,21 @@ impl Checker<'_> {
         if let Some((id, class)) = self.class_of(base) {
             let Some((index, field)) = class.field(&name.name) else {
                 let class_name = class.name.clone();
+                if let Some((index, property)) = class.property(&name.name) {
+                    let ty = property.ty;
+                    if safe {
+                        self.sink.emit(
+                            Diagnostic::error(
+                                codes::UNSUPPORTED_CONSTRUCT,
+                                "safe property access is not supported by this compiler yet",
+                            )
+                            .with_primary(expr.span, "not implemented in Noto 0.5"),
+                        );
+                        return self.store.error();
+                    }
+                    self.record_resolution(expr.id, Resolution::Property { class: id, index });
+                    return ty;
+                }
                 let mut diagnostic = if class.method(&name.name).is_some() {
                     Diagnostic::error(
                         codes::UNKNOWN_MEMBER,
@@ -1965,6 +2092,7 @@ impl Checker<'_> {
             self.record_resolution(expr.id, Resolution::Field { class: id, index });
             return ty;
         }
+
 
         match builtins::member(&self.store, base, &name.name) {
             Some(builtin) if builtin.is_property() => {
@@ -2079,4 +2207,20 @@ fn edit_distance(a: &str, b: &str) -> usize {
     }
 
     previous[b.len()]
+}
+
+/// Finds the initialiser expression a field recorded by node id.
+///
+/// Analysis keeps a node id rather than a borrowed expression, because the
+/// AST is never held by the results; this walks the declaration to get it
+/// back when the initialiser has to be checked or lowered.
+pub(crate) fn find_expr<'a>(
+    decl: &'a noto_ast::TypeDeclItem,
+    id: noto_ast::NodeId,
+) -> Option<&'a Expr> {
+    decl.fields
+        .iter()
+        .filter_map(|field| field.default.as_ref())
+        .chain(decl.properties.iter().filter_map(|property| property.default.as_ref()))
+        .find(|expr| expr.id == id)
 }

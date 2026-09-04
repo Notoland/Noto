@@ -27,6 +27,7 @@ pub(crate) fn check(module: &Module, id: ModuleId, analysis: &Analysis, found: &
     usage.visit_module(module);
     locals(id, analysis, &usage, found);
     functions(id, analysis, &usage, found);
+    properties(id, analysis, &usage, found);
     constants(id, analysis, &usage, found);
 }
 
@@ -37,11 +38,28 @@ pub(crate) fn check(module: &Module, id: ModuleId, analysis: &Analysis, found: &
 /// dead function still counts as used: reachability is the optimizer's
 /// analysis, and a lint that guesses at it would be wrong in both directions.
 fn functions(module: ModuleId, analysis: &Analysis, usage: &Usage, found: &mut Found) {
+    // An accessor is reported as the property it belongs to, not as the
+    // function it was compiled into: `R.get:area` is not a name anyone wrote.
+    let accessors: Vec<FunctionId> = analysis
+        .classes
+        .iter()
+        .flat_map(|class| &class.properties)
+        .flat_map(|property| {
+            std::iter::once(property.getter).chain(property.setter)
+        })
+        .collect();
+
     for (index, function) in analysis.functions.iter().enumerate() {
         let id = FunctionId(index as u32);
         // An exported declaration is the module's surface, not its dead
-        // code: what calls it is by definition somewhere else.
-        if function.module != module || function.is_exported {
+        // code: what calls it is by definition somewhere else. A synthesised
+        // constructor was written by the compiler, so there is nobody to tell
+        // that it is unused.
+        if function.module != module
+            || function.is_exported
+            || function.init_of.is_some()
+            || accessors.contains(&id)
+        {
             continue;
         }
         let is_test = function.name.starts_with(TEST_PREFIX);
@@ -69,6 +87,31 @@ fn functions(module: ModuleId, analysis: &Analysis, usage: &Usage, found: &mut F
     }
 }
 
+/// Reports properties nothing reads.
+fn properties(module: ModuleId, analysis: &Analysis, usage: &Usage, found: &mut Found) {
+    for class in &analysis.classes {
+        if class.module != module || class.is_exported {
+            continue;
+        }
+        for property in &class.properties {
+            if is_ignored(&property.name) || usage.called.contains(&property.getter) {
+                continue;
+            }
+            found.push(
+                Diagnostic::warning(
+                    codes::UNUSED_FUNCTION,
+                    format!("property `{}.{}` is never read", class.name, property.name),
+                )
+                .with_primary(property.span, "declared here and never read")
+                .with_help(format!(
+                    "remove it, or rename it to `_{}` to say that is deliberate",
+                    property.name
+                )),
+            );
+        }
+    }
+}
+
 /// Reports constants nothing reads.
 fn constants(module: ModuleId, analysis: &Analysis, usage: &Usage, found: &mut Found) {
     for (index, constant) in analysis.constants.iter().enumerate() {
@@ -93,7 +136,11 @@ fn constants(module: ModuleId, analysis: &Analysis, usage: &Usage, found: &mut F
 fn locals(module: ModuleId, analysis: &Analysis, usage: &Usage, found: &mut Found) {
     for (index, local) in analysis.locals.iter().enumerate() {
         let id = LocalId(index as u32);
-        if analysis.functions[local.function.0 as usize].module != module {
+        let owner = &analysis.functions[local.function.0 as usize];
+        // A synthesised constructor's parameters mirror the class's, and the
+        // stores into the object are emitted by lowering rather than written
+        // anywhere — so this walk cannot see them being used.
+        if owner.module != module || owner.init_of.is_some() {
             continue;
         }
         // The receiver is bound by the compiler, not written by anyone, so
@@ -196,6 +243,15 @@ impl Visitor for Usage<'_> {
                     }
                     Some(Resolution::Const(id)) => {
                         self.constants.insert(id);
+                    }
+                    // Reading a property calls its getter and writing it calls
+                    // its setter, so touching one uses both.
+                    Some(Resolution::Property { class, index }) => {
+                        let property = &self.analysis.class(class).properties[index as usize];
+                        self.called.insert(property.getter);
+                        if let Some(setter) = property.setter {
+                            self.called.insert(setter);
+                        }
                     }
                     _ => {}
                 }

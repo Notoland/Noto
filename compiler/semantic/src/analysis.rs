@@ -68,6 +68,14 @@ pub enum Resolution {
         /// Its position in the class's field list, which is also its slot.
         index: u32,
     },
+    /// A property read or written through a receiver. Reading calls its
+    /// getter; writing, when it has a setter, calls that.
+    Property {
+        /// The class the property belongs to.
+        class: ClassId,
+        /// Its position in the class's property list.
+        index: u32,
+    },
     /// An operation provided by the compiler.
     Builtin(Builtin),
     /// A name that could not be resolved; already reported.
@@ -108,6 +116,10 @@ pub struct FunctionInfo {
     pub locals: Vec<LocalId>,
     /// The AST node of its body, or `None` for an abstract declaration.
     pub body: Option<NodeId>,
+    /// The class this function initialises, when it is a synthesised
+    /// `Class.<init>`. Such a function has no body block; lowering builds it
+    /// from the field initialisers instead.
+    pub init_of: Option<ClassId>,
     /// Whether it was declared `async`.
     pub is_async: bool,
     /// Where it was declared.
@@ -155,6 +167,28 @@ pub struct FieldInfo {
     pub ty: TypeId,
     /// Whether it may be reassigned, from `val` or `var`.
     pub is_mutable: bool,
+    /// The expression that initialises it, for a field declared in the class
+    /// body. Constructor parameters have none: the argument initialises them.
+    pub initializer: Option<NodeId>,
+    /// Where it was declared.
+    pub span: Span,
+}
+
+/// One property of a class: a member read like a field but backed by
+/// accessors.
+#[derive(Clone, Debug)]
+pub struct PropertyInfo {
+    /// The name as written.
+    pub name: String,
+    /// Its declared type.
+    pub ty: TypeId,
+    /// Whether it may be written at all, from `val` or `var`.
+    pub is_mutable: bool,
+    /// The function a read calls, taking the receiver.
+    pub getter: FunctionId,
+    /// The function a write calls, taking the receiver and the value; `None`
+    /// when the property cannot be assigned to.
+    pub setter: Option<FunctionId>,
     /// Where it was declared.
     pub span: Span,
 }
@@ -179,8 +213,17 @@ pub struct ClassInfo {
     pub is_exported: bool,
     /// Its fields, in declaration order. The order is the object's layout.
     pub fields: Vec<FieldInfo>,
+    /// How many of those fields are primary constructor parameters. A
+    /// construction call takes exactly this many arguments; the fields after
+    /// them are declared in the class body and carry their own initialisers.
+    pub primary_count: u32,
+    /// Its properties, in declaration order.
+    pub properties: Vec<PropertyInfo>,
     /// Its methods, in declaration order.
     pub methods: Vec<MethodInfo>,
+    /// The synthesised `Class.<init>` that runs the body fields' initialisers,
+    /// present when any field has one.
+    pub init: Option<FunctionId>,
     /// The type that names it.
     pub ty: TypeId,
     /// The declaration id carried by that type.
@@ -201,6 +244,15 @@ impl ClassInfo {
     /// Looks a method up by name.
     pub fn method(&self, name: &str) -> Option<&MethodInfo> {
         self.methods.iter().find(|method| method.name == name)
+    }
+
+    /// Looks a property up by name, returning its index and what is known of
+    /// it.
+    pub fn property(&self, name: &str) -> Option<(u32, &PropertyInfo)> {
+        self.properties
+            .iter()
+            .position(|property| property.name == name)
+            .map(|index| (index as u32, &self.properties[index]))
     }
 }
 

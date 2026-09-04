@@ -700,6 +700,110 @@ fn a_method_cannot_assign_to_a_val_field() {
     );
 }
 
+// --- fields declared in the class body, and properties ----------------------
+
+#[test]
+fn a_body_field_is_not_a_constructor_parameter() {
+    let analysis = check_ok(
+        "class Person(val name: String) {\n    val greeting: String = \"olá\"\n}\n         fn main() {\n    println(Person(\"joão\").greeting)\n}\n",
+    );
+    let class = &analysis.classes[0];
+    assert_eq!(class.fields.len(), 2, "both are fields");
+    assert_eq!(class.primary_count, 1, "but only one is passed");
+    assert!(class.init.is_some(), "the initialiser needs a function to run in");
+}
+
+#[test]
+fn a_body_field_may_read_a_constructor_parameter() {
+    check_ok(
+        "class Person(val first: String, val last: String) {\n             val full: String = first + \" \" + last\n}\n         fn main() {\n    println(Person(\"a\", \"b\").full)\n}\n",
+    );
+}
+
+#[test]
+fn a_body_field_initialiser_is_type_checked() {
+    check_error(
+        "class Person(val name: String) {\n    val age: Int = \"old\"\n}\nfn main() {}\n",
+        "expected `Int`",
+    );
+}
+
+#[test]
+fn a_body_field_needs_something_to_initialise_it() {
+    check_error(
+        "class Person(val name: String) {\n    val age: Int\n}\nfn main() {}\n",
+        "has nothing to initialise it",
+    );
+}
+
+#[test]
+fn a_class_without_body_fields_needs_no_initialiser_function() {
+    let analysis = check_ok(
+        "class Point(val x: Int)\nfn main() {\n    println(Point(1).x)\n}\n",
+    );
+    assert!(analysis.classes[0].init.is_none(), "there is nothing for it to do");
+}
+
+#[test]
+fn a_computed_property_is_read_through_its_getter() {
+    let analysis = check_ok(
+        "class Rect(val width: Int, val height: Int) {\n             val area: Int { get = this.width * this.height }\n}\n         fn main() {\n    println(Rect(2, 3).area)\n}\n",
+    );
+    let class = &analysis.classes[0];
+    assert_eq!(class.properties.len(), 1);
+    assert_eq!(class.properties[0].name, "area");
+    assert!(class.properties[0].setter.is_none(), "no `set` was written");
+    assert_eq!(class.fields.len(), 2, "a computed property stores nothing");
+}
+
+#[test]
+fn a_property_with_a_setter_can_be_assigned() {
+    check_ok(
+        "class Box(val start: Int) {\n             var stored: Int = 0\n             var value: Int {\n        get = this.stored\n        set { this.stored = value }\n    }\n}\n         fn main() {\n    val b = Box(1)\n    b.value = 5\n    println(b.value)\n}\n",
+    );
+}
+
+#[test]
+fn a_property_without_a_setter_cannot_be_assigned() {
+    check_error(
+        "class Rect(val w: Int) {\n    val area: Int { get = this.w }\n}\n         fn main() {\n    val r = Rect(1)\n    r.area = 2\n}\n",
+        "cannot assign to `Rect.area`",
+    );
+}
+
+#[test]
+fn a_val_property_may_not_have_a_setter() {
+    check_error(
+        "class Box(val n: Int) {\n             val value: Int {\n        get = this.n\n        set { }\n    }\n}\n         fn main() {}\n",
+        "a `val` property cannot have a setter",
+    );
+}
+
+#[test]
+fn a_getter_body_must_produce_the_property_type() {
+    check_error(
+        "class Rect(val w: Int) {\n    val area: Int { get = \"wide\" }\n}\nfn main() {}\n",
+        "this `get` must produce a `Int`",
+    );
+}
+
+#[test]
+fn a_property_may_not_share_a_name_with_a_field() {
+    check_error(
+        "class Rect(val area: Int) {\n    val area: Int { get = 1 }\n}\nfn main() {}\n",
+        "already has a field named `area`",
+    );
+}
+
+#[test]
+fn a_stored_property_becomes_an_ordinary_field() {
+    let analysis = check_ok(
+        "class Counter(val start: Int) {\n    var count: Int = 0\n}\n         fn main() {\n    val c = Counter(1)\n    c.count = 2\n    println(c.count)\n}\n",
+    );
+    assert_eq!(analysis.classes[0].fields.len(), 2);
+    assert!(analysis.classes[0].properties.is_empty(), "nothing computed here");
+}
+
 // --- enums -----------------------------------------------------------------
 
 #[test]

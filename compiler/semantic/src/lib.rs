@@ -24,8 +24,8 @@ mod scope;
 
 pub use analysis::{
     Analysis, ClassId, ClassInfo, ConstId, ConstInfo, ConstValue, EnumCaseInfo, EnumId, EnumInfo,
-    FieldInfo, FunctionId, FunctionInfo, LocalId, LocalInfo, MethodInfo, ModuleId, Resolution,
-    TestInfo,
+    FieldInfo, FunctionId, FunctionInfo, LocalId, LocalInfo, MethodInfo, ModuleId, PropertyInfo,
+    Resolution, TestInfo,
 };
 
 /// The name the receiver of a method is bound to.
@@ -34,6 +34,12 @@ pub use analysis::{
 /// collide with it; binding it as an ordinary local is what lets `this` be
 /// looked up, type checked and lowered like any other parameter.
 pub const RECEIVER_NAME: &str = "this";
+/// The name the incoming value of a `set` accessor is bound to.
+///
+/// The grammar gives a setter no parameter list, so the value arrives under
+/// this conventional name — the same one C# uses — rather than one each
+/// property would have to repeat.
+pub const SETTER_VALUE_NAME: &str = "value";
 pub use builtins::Builtin;
 
 use noto_ast::{Ident, Module};

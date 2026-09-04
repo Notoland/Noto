@@ -203,6 +203,37 @@ fn an_exported_declaration_is_never_dead_code() {
 }
 
 #[test]
+fn a_property_that_is_never_read_is_reported_as_a_property() {
+    let lints = lints(
+        "class Rect(val w: Int) {\n    val area: Int { get = this.w }\n}\n         fn main() {\n    println(Rect(1).w)\n}\n",
+    );
+    assert_eq!(lints.len(), 1);
+    assert!(lints[0].message.contains("property `Rect.area`"), "{}", lints[0].message);
+    assert!(
+        lints[0].helps.iter().any(|help| help.contains("`_area`")),
+        "the accessor's compiled name is not one anyone wrote: {:?}",
+        lints[0].helps
+    );
+}
+
+#[test]
+fn a_property_that_is_read_is_not_reported() {
+    assert!(codes_of(
+        "class Rect(val w: Int) {\n    val area: Int { get = this.w }\n}\n         fn main() {\n    println(Rect(1).area)\n}\n"
+    )
+    .is_empty());
+}
+
+#[test]
+fn a_synthesised_constructor_is_never_reported() {
+    // Nobody wrote `Class.<init>`, so there is nobody to tell about it.
+    assert!(codes_of(
+        "class Person(val name: String) {\n    val greeting: String = \"hi\"\n}\n         fn main() {\n    println(Person(\"a\").greeting)\n}\n"
+    )
+    .is_empty());
+}
+
+#[test]
 fn a_constant_that_is_never_read_is_reported() {
     let lints = lints("const LIMIT: Int = 10\nfn main() {\n    println(1)\n}\n");
     assert_eq!(lints.len(), 1);

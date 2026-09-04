@@ -73,9 +73,25 @@ pub fn lower_program(
 
     let bodies: HashMap<NodeId, &noto_ast::Block> =
         modules.iter().flat_map(|module| collect_bodies(module)).collect();
+    let declarations: Vec<&noto_ast::TypeDeclItem> = modules
+        .iter()
+        .flat_map(|module| &module.items)
+        .filter_map(|item| match &item.kind {
+            ItemKind::TypeDecl(decl) => Some(decl),
+            _ => None,
+        })
+        .collect();
     for (index, info) in analysis.functions.iter().enumerate() {
         let semantic_id = FunctionId(index as u32);
         let ir_id = function_ids[&semantic_id];
+
+        // A synthesised `Class.<init>` has no block: its body is the class's
+        // field initialisers, built here rather than parsed.
+        if let Some(class) = info.init_of {
+            let mut builder = Builder::new(analysis, &mut program, sink, &function_ids, ir_id);
+            builder.lower_initializer(semantic_id, class, &declarations);
+            continue;
+        }
 
         let Some(body_id) = info.body else { continue };
         let Some(body) = bodies.get(&body_id) else {
@@ -96,6 +112,18 @@ pub fn lower_program(
     program
 }
 
+/// Finds the initialiser expression a field recorded by node id.
+pub(crate) fn find_initializer(
+    decl: &noto_ast::TypeDeclItem,
+    id: NodeId,
+) -> Option<&noto_ast::Expr> {
+    decl.fields
+        .iter()
+        .filter_map(|field| field.default.as_ref())
+        .chain(decl.properties.iter().filter_map(|property| property.default.as_ref()))
+        .find(|expr| expr.id == id)
+}
+
 /// Indexes every block that serves as a function or test body.
 fn collect_bodies(module: &Module) -> HashMap<NodeId, &noto_ast::Block> {
     let mut bodies = HashMap::new();
@@ -113,6 +141,15 @@ fn collect_bodies(module: &Module) -> HashMap<NodeId, &noto_ast::Block> {
                 for method in &decl.methods {
                     if let ItemKind::Fn(function) = &method.kind {
                         if let Some(body) = &function.body {
+                            bodies.insert(body.id, body);
+                        }
+                    }
+                }
+                for property in &decl.properties {
+                    for accessor in
+                        [&property.getter, &property.setter].into_iter().flatten()
+                    {
+                        if let Some(body) = &accessor.body {
                             bodies.insert(body.id, body);
                         }
                     }
@@ -285,6 +322,94 @@ impl<'a> Builder<'a> {
             };
             self.set_terminator(terminator);
         }
+    }
+
+    /// Builds `Class.<init>`: allocate the object, store the primary
+    /// constructor's arguments, then run each body field's initialiser and
+    /// store what it produced.
+    ///
+    /// The initialisers run in declaration order, and each is stored before
+    /// the next runs, so one that calls something observing the object sees
+    /// every field declared above it already set.
+    pub(crate) fn lower_initializer(
+        &mut self,
+        semantic_id: FunctionId,
+        class: noto_semantic::ClassId,
+        declarations: &[&noto_ast::TypeDeclItem],
+    ) {
+        let info = self.analysis.function(semantic_id);
+        let mut parameters = Vec::new();
+        for local_id in &info.locals.clone() {
+            let local = self.analysis.local(*local_id);
+            let slot = SlotId(self.function().slots.len() as u32);
+            let ty = lower_type(&self.analysis.store, local.ty);
+            self.function_mut().slots.push(Slot {
+                name: local.name.clone(),
+                ty,
+                is_parameter: local.is_parameter,
+            });
+            self.slots.insert(*local_id, slot);
+            if local.is_parameter {
+                parameters.push(slot);
+            }
+        }
+        self.function_mut().parameters = parameters.clone();
+
+        let entry = self.new_block("entry");
+        debug_assert_eq!(entry, BlockId(0), "the entry block must come first");
+        self.block = entry;
+
+        let class_info = self.analysis.class(class);
+        let name = class_info.name.clone();
+        let field_count = class_info.fields.len();
+        let primary = class_info.primary_count as usize;
+        let initializers: Vec<(usize, Option<NodeId>)> = class_info
+            .fields
+            .iter()
+            .enumerate()
+            .map(|(index, field)| (index, field.initializer))
+            .collect();
+
+        let span = self.function().span;
+        let size = object_size(field_count);
+        let object = self.emit_value(IrType::Ptr, span, |dest| InstKind::Alloc { dest, size });
+
+        for (index, slot) in parameters.iter().enumerate().take(primary) {
+            let ty = self.function().slot(*slot).ty;
+            let value = self.emit_value(ty, span, |dest| InstKind::LoadLocal {
+                dest,
+                slot: *slot,
+            });
+            self.push(
+                InstKind::Store {
+                    address: object.clone(),
+                    offset: field_offset(index as u32),
+                    value,
+                },
+                span,
+            );
+        }
+
+        let Some(decl) = declarations.iter().find(|decl| decl.name.name == name) else {
+            self.set_terminator(Terminator::Return(Some(object)));
+            return;
+        };
+
+        for (index, initializer) in initializers.into_iter().skip(primary) {
+            let Some(node) = initializer else { continue };
+            let Some(expr) = crate::find_initializer(decl, node) else { continue };
+            let value = self.lower_expr(expr);
+            self.push(
+                InstKind::Store {
+                    address: object.clone(),
+                    offset: field_offset(index as u32),
+                    value,
+                },
+                span,
+            );
+        }
+
+        self.set_terminator(Terminator::Return(Some(object)));
     }
 
     // --- function and block plumbing --------------------------------------

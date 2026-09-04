@@ -121,7 +121,7 @@ impl Usage<'_> {
                 let info = self.analysis.class(id);
                 (info.module, info.name.clone())
             }
-            Resolution::Field { class, .. } => {
+            Resolution::Field { class, .. } | Resolution::Property { class, .. } => {
                 let info = self.analysis.class(class);
                 (info.module, info.name.clone())
             }

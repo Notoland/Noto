@@ -12,6 +12,15 @@ class Counter(var count: Int) {
     }
 }
 
+// A field declared in the class body carries its own initialiser, which may
+// read the constructor's parameters. A property is read like a field but
+// computed by its `get`.
+class Segment(val from: Point, val to: Point) {
+    val span: Int = distance(from.x, to.x) + distance(from.y, to.y)
+
+    val isPoint: Bool { get = this.span == 0 }
+}
+
 class Line(val from: Point, val to: Point) {
     // A method may call another method of the same class.
     fn length(): Int = this.horizontal() + this.vertical()
@@ -66,6 +75,16 @@ test "a method may call another method of the same class" {
     assert(line.horizontal() == 3)
     assert(line.vertical() == 4)
     assert(line.length() == 7)
+}
+
+test "a body field is initialised from the constructor's parameters" {
+    val s = Segment(Point(1, 1), Point(4, 5))
+    assert(s.span == 7)
+}
+
+test "a property is computed on each read" {
+    assert(Segment(Point(0, 0), Point(0, 0)).isPoint)
+    assert(!Segment(Point(0, 0), Point(1, 0)).isPoint)
 }
 
 fn main() {
