@@ -525,7 +525,7 @@ impl<'a> Builder<'a> {
                 codes::UNSUPPORTED_CONSTRUCT,
                 format!("{what} cannot be compiled to native code yet"),
             )
-            .with_primary(span, "not implemented in Noto 0.6"),
+            .with_primary(span, "not implemented in Noto 0.7"),
         );
         Operand::Const(Const::Unit)
     }

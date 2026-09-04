@@ -23,7 +23,7 @@ Hello, Noto!
 
 ## Status
 
-**Noto is in early development.** Version 0.6 is a working compiler for a real
+**Noto is in early development.** Version 0.7 is a working compiler for a real
 subset of the language, not a finished product. The pipeline runs end to end:
 source becomes a native Linux x86-64 executable that you can run.
 
