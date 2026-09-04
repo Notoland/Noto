@@ -563,6 +563,44 @@ impl Checker<'_> {
         self.store.intern(Type::List(element))
     }
 
+    /// Checks a method called on a list.
+    ///
+    /// `push` is the only one so far, and it exists here rather than among
+    /// the builtins because its parameter is the list's element type: there
+    /// is no one signature to write down.
+    fn check_list_method(
+        &mut self,
+        expr: &Expr,
+        call: &noto_ast::CallExpr,
+        name: &noto_ast::Ident,
+        element: TypeId,
+    ) -> TypeId {
+        if name.name != "push" {
+            let rendered = self.store.render(element);
+            self.sink.emit(
+                Diagnostic::error(
+                    codes::UNKNOWN_MEMBER,
+                    format!("`[{rendered}]` has no method `{}`", name.name),
+                )
+                .with_primary(name.span, "no such method")
+                .with_note("a list has `push` and `length`"),
+            );
+            for argument in &call.arguments {
+                self.check_expr(&argument.value);
+            }
+            return self.store.error();
+        }
+
+        self.check_argument_count(expr.span, call.arguments.len(), 1, "push");
+        for argument in &call.arguments {
+            let found = self.check_expr_expecting(&argument.value, element);
+            self.expect_assignable(found, element, argument.value.span, None);
+        }
+
+        self.record_resolution(call.callee.id, Resolution::Builtin(builtins::Builtin::ListPush));
+        self.store.unit()
+    }
+
     /// Checks `xs[i]`.
     fn check_index(&mut self, target: &Expr, index: &Expr, span: Span) -> TypeId {
         let target_ty = self.check_expr(target);
@@ -1518,6 +1556,15 @@ impl Checker<'_> {
                     return self.store.error();
                 }
                 return self.check_qualified_call(expr, call, module, name);
+            }
+        }
+
+        // `xs.push(v)`: a method whose parameter is the list's own element
+        // type, which no fixed builtin signature can describe.
+        if let ExprKind::Member { receiver, name, safe: false } = &call.callee.kind {
+            let receiver_ty = self.check_expr(receiver);
+            if let Type::List(element) = *self.store.get(receiver_ty) {
+                return self.check_list_method(expr, call, name, element);
             }
         }
 

@@ -670,12 +670,26 @@ fn a_compound_property_assignment_reads_through_the_getter_first() {
 // --- lists -------------------------------------------------------------------
 
 #[test]
-fn a_list_literal_stores_its_length_then_its_elements() {
+fn a_list_literal_fills_a_buffer_and_a_header() {
     let ir = function_ir("fn make(): [Int] = [7, 8]\n", "make");
-    assert!(ir.contains("alloc 24"), "a length and two elements: {ir}");
-    assert!(ir.contains("store [%0+0] 2:i64"), "the length comes first: {ir}");
-    assert!(ir.contains("store [%0+8] 7:i64"), "{ir}");
-    assert!(ir.contains("store [%0+16] 8:i64"), "{ir}");
+    // Two elements in a buffer of their own...
+    assert!(ir.contains("alloc 16"), "{ir}");
+    assert!(ir.contains("store [%0+0] 7:i64"), "{ir}");
+    assert!(ir.contains("store [%0+8] 8:i64"), "{ir}");
+    // ...and a header of length, capacity and the pointer to them.
+    assert!(ir.contains("alloc 24"), "{ir}");
+    assert!(ir.contains("store [%1+0] 2:i64"), "the length: {ir}");
+    assert!(ir.contains("store [%1+8] 2:i64"), "the capacity: {ir}");
+    assert!(ir.contains("store [%1+16] %0"), "the buffer: {ir}");
+}
+
+#[test]
+fn pushing_calls_the_runtime_rather_than_growing_inline() {
+    let ir = function_ir(
+        "fn add(xs: [Int]) {\n    xs.push(1)\n}\n",
+        "add",
+    );
+    assert!(ir.contains("intrinsic list_push"), "{ir}");
 }
 
 #[test]

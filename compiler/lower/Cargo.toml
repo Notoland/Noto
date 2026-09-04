@@ -15,6 +15,7 @@ noto-ast.workspace = true
 noto-types.workspace = true
 noto-semantic.workspace = true
 noto-ir.workspace = true
+noto-runtime.workspace = true
 
 [dev-dependencies]
 noto-parser.workspace = true

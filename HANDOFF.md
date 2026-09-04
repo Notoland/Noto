@@ -5,7 +5,7 @@ human or agent. Read this before touching anything.
 
 **Where the project stands:** the compiler is real and works end to end. A
 `.noto` file becomes a static native ELF executable with no LLVM, no libc, and
-no external toolchain. 483 tests pass, 0 fail, no warnings. The whole tool
+no external toolchain. 488 tests pass, 0 fail, no warnings. The whole tool
 set — `run`, `build`, `check`, `test`, `lint`, `fmt` — is implemented, and
 `class` gives the language its first object type.
 
@@ -110,8 +110,10 @@ fn main() {
   `noto test`
 - `import`/`export`: a program is many files, one module each, resolved from
   the root file's directory
-- `[T]` lists: literals, `.length`, indexing, element assignment and `for`,
-  with every index bounds-checked at runtime
+- `[T]` lists: literals, `.length`, `.push`, indexing, element assignment and
+  `for`, with every index bounds-checked at runtime. A list is a header of
+  length, capacity and a data pointer, so growing one leaves every pointer to
+  it valid
 - `enum Direction { North, East }` and `enum Shape { Circle(r: Int) }`:
   cases with or without data, matched bare or qualified, destructured in a
   pattern, with coverage counting as exhaustive
@@ -294,7 +296,7 @@ RFC.
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
-cargo test --workspace          # 483 tests, must stay at 0 failures
+cargo test --workspace          # 488 tests, must stay at 0 failures
 cargo build --workspace
 cargo run -q -p noto-driver --example emit -- examples/hello.noto /tmp/hello && /tmp/hello
 ```

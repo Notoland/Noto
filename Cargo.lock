@@ -108,6 +108,7 @@ dependencies = [
  "noto-diagnostics",
  "noto-ir",
  "noto-parser",
+ "noto-runtime",
  "noto-semantic",
  "noto-span",
  "noto-types",

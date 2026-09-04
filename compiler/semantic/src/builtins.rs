@@ -35,6 +35,11 @@ pub enum Builtin {
     StringLength,
     /// `[T].length: Int`
     ListLength,
+    /// `[T].push(value: T)`
+    ///
+    /// Its parameter is the receiver's element type, so it is checked where
+    /// that is known rather than by a signature here.
+    ListPush,
     /// `assert(condition: Bool)`
     Assert,
 }
@@ -48,6 +53,7 @@ impl Builtin {
             PrintlnString | PrintlnInt | PrintlnBool | PrintlnEmpty => "println",
             IntToString | BoolToString | StringToString => "toString",
             StringLength | ListLength => "length",
+            ListPush => "push",
             Assert => "assert",
         }
     }
@@ -60,7 +66,7 @@ impl Builtin {
             PrintInt | PrintlnInt => vec![store.int()],
             PrintBool | PrintlnBool | Assert => vec![store.bool()],
             PrintlnEmpty | IntToString | BoolToString | StringToString | StringLength
-            | ListLength => Vec::new(),
+            | ListLength | ListPush => Vec::new(),
         }
     }
 
@@ -77,7 +83,10 @@ impl Builtin {
     /// Whether the builtin is called as a method on a receiver.
     pub fn is_method(self) -> bool {
         use Builtin::*;
-        matches!(self, IntToString | BoolToString | StringToString | StringLength | ListLength)
+        matches!(
+            self,
+            IntToString | BoolToString | StringToString | StringLength | ListLength | ListPush
+        )
     }
 
     /// Whether the builtin is read as a property rather than called.

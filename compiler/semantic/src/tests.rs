@@ -901,6 +901,37 @@ fn a_for_binds_the_element_type() {
     );
 }
 
+#[test]
+fn a_list_grows_with_push() {
+    check_ok(
+        "fn main() {\n    val xs: [Int] = []\n    xs.push(1)\n    println(xs.length)\n}\n",
+    );
+}
+
+#[test]
+fn push_takes_the_element_type() {
+    check_error(
+        "fn main() {\n    val xs = [1, 2]\n    xs.push(\"three\")\n}\n",
+        "expected `Int`",
+    );
+}
+
+#[test]
+fn push_takes_exactly_one_argument() {
+    check_error(
+        "fn main() {\n    val xs = [1]\n    xs.push()\n}\n",
+        "`push` takes 1 argument",
+    );
+}
+
+#[test]
+fn a_list_has_no_other_methods_yet() {
+    check_error(
+        "fn main() {\n    val xs = [1]\n    xs.pop()\n}\n",
+        "`[Int]` has no method `pop`",
+    );
+}
+
 // --- enums -----------------------------------------------------------------
 
 #[test]

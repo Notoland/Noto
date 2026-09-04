@@ -1,9 +1,9 @@
 // Lists in Noto 0.6. Run the tests with `noto test examples/lists.noto`.
 //
-// A list is a fixed-length sequence: a pointer to its length followed by its
-// elements, one machine word each. Every index is checked before it is used —
-// reading past the end ends the process rather than returning whatever the
-// allocator last left there.
+// A list is a header — length, capacity, and a pointer to its elements — so
+// `push` can replace the buffer without invalidating anyone's pointer to the
+// list. Every index is checked before it is used: reading past the end ends
+// the process rather than returning whatever the allocator last left there.
 
 class Point(val x: Int, val y: Int)
 
@@ -20,6 +20,16 @@ export fn largest(xs: [Int]): Int {
         if x > best { best = x }
     }
     return best
+}
+
+export fn evens(limit: Int): [Int] {
+    val out: [Int] = []
+    var n = 0
+    while n < limit {
+        if n % 2 == 0 { out.push(n) }
+        n += 1
+    }
+    return out
 }
 
 export fn joined(parts: [String], separator: String): String {
@@ -68,6 +78,31 @@ test "a list may hold anything a binding may" {
     assert(grid[1].length == 1)
 }
 
+test "a list grows as it is pushed to" {
+    val xs: [Int] = []
+    assert(xs.length == 0)
+    xs.push(10)
+    xs.push(20)
+    assert(xs.length == 2)
+    assert(xs[1] == 20)
+}
+
+test "growing past the first buffer keeps every element" {
+    val xs = evens(20)
+    assert(xs.length == 10)
+    assert(xs[0] == 0)
+    assert(xs[9] == 18)
+    assert(sum(xs) == 90)
+}
+
+test "a literal can be pushed to as well" {
+    val xs = [1, 2]
+    xs.push(3)
+    assert(xs.length == 3)
+    assert(xs[0] == 1)
+    assert(xs[2] == 3)
+}
+
 test "strings join through a list" {
     assert(joined(["a", "b", "c"], "-") == "a-b-c")
     assert(joined([], ",") == "")
@@ -78,4 +113,11 @@ fn main() {
     println("${readings.length} readings")
     println("total ${sum(readings)}, largest ${largest(readings)}")
     println(joined(["ana", "joão", "maria"], ", "))
+    println("evens under 20: ${joined_ints(evens(20))}")
+}
+
+fn joined_ints(xs: [Int]): String {
+    val parts: [String] = []
+    for x in xs { parts.push(x.toString()) }
+    return joined(parts, " ")
 }

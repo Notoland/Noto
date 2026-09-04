@@ -16,7 +16,8 @@
 use super::encode::{Assembler, Cond, Label, Reg, Reference};
 use noto_runtime::{
     Routine, ASSERT_FAILURE_MESSAGE, ASSERT_FAILURE_STATUS, FALSE_TEXT, HEAP_CHUNK_SIZE,
-    INDEX_FAILURE_MESSAGE, INDEX_FAILURE_STATUS, OUT_OF_MEMORY_MESSAGE, OUT_OF_MEMORY_STATUS,
+    INDEX_FAILURE_MESSAGE, INDEX_FAILURE_STATUS, LIST_CAPACITY_OFFSET, LIST_DATA_OFFSET,
+    LIST_INITIAL_CAPACITY, LIST_LENGTH_OFFSET, OUT_OF_MEMORY_MESSAGE, OUT_OF_MEMORY_STATUS,
     STRING_DATA_OFFSET, STRING_LENGTH_OFFSET, TRUE_TEXT,
 };
 use std::collections::HashMap;
@@ -167,6 +168,7 @@ pub fn emit(
     emit_string_concat(assembler, labels);
     emit_string_length(assembler, labels);
     emit_string_equals(assembler, labels);
+    emit_list_push(assembler, labels);
     emit_index_check(assembler, labels, data);
     emit_assert(assembler, labels, data);
 }
@@ -696,6 +698,98 @@ fn emit_string_equals(assembler: &mut Assembler, labels: &RuntimeLabels) {
     assembler.bind(different);
     assembler.mov_reg_imm64(Reg::Rax, 0);
     assembler.ret();
+}
+
+/// Multiplies a register by the size of one element.
+///
+/// Three doublings rather than a shift: the encoder has `add` and this needs
+/// no new instruction to be encoded and tested for one use.
+fn times_eight(assembler: &mut Assembler, reg: Reg) {
+    assembler.add(reg, reg);
+    assembler.add(reg, reg);
+    assembler.add(reg, reg);
+}
+
+/// `list_push(list, value)`: appends one element, growing the buffer when it
+/// is full.
+///
+/// The elements live in a block the header points at, so replacing that block
+/// leaves every pointer to the list itself valid. Growth doubles the capacity,
+/// which makes a run of pushes cost a constant amount each on average.
+fn emit_list_push(assembler: &mut Assembler, labels: &RuntimeLabels) {
+    begin(assembler, labels, Routine::ListPush);
+    prologue(assembler, 3);
+
+    let list = -8;
+    let value = -16;
+    let old_data = -24;
+
+    assembler.mov_mem_reg(Reg::Rbp, list, Reg::Rdi);
+    assembler.mov_mem_reg(Reg::Rbp, value, Reg::Rsi);
+
+    let store = assembler.label();
+    let copy = assembler.label();
+    let copied = assembler.label();
+
+    // rcx = length, rdx = capacity
+    assembler.mov_reg_mem(Reg::Rcx, Reg::Rdi, LIST_LENGTH_OFFSET);
+    assembler.mov_reg_mem(Reg::Rdx, Reg::Rdi, LIST_CAPACITY_OFFSET);
+    assembler.cmp(Reg::Rcx, Reg::Rdx);
+    assembler.jcc(Cond::Below, store);
+
+    // Full: the new capacity is double the old, or the initial one when the
+    // list has never held anything.
+    let has_capacity = assembler.label();
+    assembler.cmp_imm(Reg::Rdx, 0);
+    assembler.jcc(Cond::Ne, has_capacity);
+    assembler.mov_reg_imm64(Reg::Rdx, LIST_INITIAL_CAPACITY);
+    let sized = assembler.label();
+    assembler.jmp(sized);
+    assembler.bind(has_capacity);
+    assembler.add(Reg::Rdx, Reg::Rdx);
+    assembler.bind(sized);
+
+    // Keep the old buffer and the new capacity across the call.
+    assembler.mov_reg_mem(Reg::Rax, Reg::Rdi, LIST_DATA_OFFSET);
+    assembler.mov_mem_reg(Reg::Rbp, old_data, Reg::Rax);
+    assembler.mov_reg_mem(Reg::Rax, Reg::Rbp, list);
+    assembler.mov_mem_reg(Reg::Rax, LIST_CAPACITY_OFFSET, Reg::Rdx);
+
+    assembler.mov_reg_reg(Reg::Rdi, Reg::Rdx);
+    times_eight(assembler, Reg::Rdi);
+    assembler.call(labels.get(Routine::Alloc));
+
+    // rax = new buffer, rsi = old buffer, rcx = how many words to move
+    assembler.mov_reg_mem(Reg::Rsi, Reg::Rbp, old_data);
+    assembler.mov_reg_mem(Reg::Rdi, Reg::Rbp, list);
+    assembler.mov_mem_reg(Reg::Rdi, LIST_DATA_OFFSET, Reg::Rax);
+    assembler.mov_reg_mem(Reg::Rcx, Reg::Rdi, LIST_LENGTH_OFFSET);
+
+    assembler.bind(copy);
+    assembler.cmp_imm(Reg::Rcx, 0);
+    assembler.jcc(Cond::Eq, copied);
+    assembler.mov_reg_mem(Reg::Rdx, Reg::Rsi, 0);
+    assembler.mov_mem_reg(Reg::Rax, 0, Reg::Rdx);
+    assembler.add_imm(Reg::Rsi, 8);
+    assembler.add_imm(Reg::Rax, 8);
+    assembler.sub_imm(Reg::Rcx, 1);
+    assembler.jmp(copy);
+    assembler.bind(copied);
+
+    assembler.bind(store);
+    // data[length] = value; length += 1
+    assembler.mov_reg_mem(Reg::Rdi, Reg::Rbp, list);
+    assembler.mov_reg_mem(Reg::Rcx, Reg::Rdi, LIST_LENGTH_OFFSET);
+    assembler.mov_reg_mem(Reg::Rax, Reg::Rdi, LIST_DATA_OFFSET);
+    assembler.mov_reg_reg(Reg::Rdx, Reg::Rcx);
+    times_eight(assembler, Reg::Rdx);
+    assembler.add(Reg::Rax, Reg::Rdx);
+    assembler.mov_reg_mem(Reg::Rsi, Reg::Rbp, value);
+    assembler.mov_mem_reg(Reg::Rax, 0, Reg::Rsi);
+    assembler.add_imm(Reg::Rcx, 1);
+    assembler.mov_mem_reg(Reg::Rdi, LIST_LENGTH_OFFSET, Reg::Rcx);
+
+    epilogue(assembler);
 }
 
 /// `index_check(index, length)`: ends the process when the index is outside

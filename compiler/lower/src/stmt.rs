@@ -193,7 +193,7 @@ impl Builder<'_> {
         let length = self.emit_value(IrType::I64, span, |dest| InstKind::Load {
             dest,
             address: list_value,
-            offset: 0,
+            offset: noto_runtime::LIST_LENGTH_OFFSET as u32,
         });
         let bound_slot = self.add_temp_slot("for$end", IrType::I64);
         self.push(InstKind::StoreLocal { slot: bound_slot, value: length }, span);
@@ -242,6 +242,13 @@ impl Builder<'_> {
                 dest,
                 slot: list_slot,
             });
+            // The buffer is re-read each step: a body that pushes to the list
+            // it is walking may have replaced it.
+            let buffer = self.emit_value(IrType::Ptr, span, |dest| InstKind::Load {
+                dest,
+                address: list_value,
+                offset: noto_runtime::LIST_DATA_OFFSET as u32,
+            });
             let index = self.emit_value(IrType::I64, span, |dest| InstKind::LoadLocal {
                 dest,
                 slot: index_slot,
@@ -258,13 +265,13 @@ impl Builder<'_> {
             let address = self.emit_value(IrType::Ptr, span, |dest| InstKind::Binary {
                 dest,
                 op: BinOp::Add,
-                left: list_value,
+                left: buffer,
                 right: scaled,
             });
             let value = self.emit_value(element_ty, span, |dest| InstKind::Load {
                 dest,
                 address,
-                offset: crate::FIELD_SIZE,
+                offset: 0,
             });
             self.push(InstKind::StoreLocal { slot, value }, span);
         }

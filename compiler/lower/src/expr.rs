@@ -1059,34 +1059,58 @@ impl Builder<'_> {
         object
     }
 
-    /// Lowers `[a, b, c]` to an allocation holding the length and elements.
+    /// Lowers `[a, b, c]` to a header and a buffer holding the elements.
     fn lower_list_literal(&mut self, items: &[Expr], expr: &Expr) -> Operand {
         let values: Vec<Operand> = items.iter().map(|item| self.lower_expr(item)).collect();
+        let count = values.len();
+        let span = expr.span;
 
-        let size = crate::list_size(values.len());
-        let list = self.emit_value(IrType::Ptr, expr.span, |dest| InstKind::Alloc { dest, size });
-
-        self.push(
-            InstKind::Store {
-                address: list.clone(),
-                offset: 0,
-                value: Operand::Const(Const::Int {
-                    value: values.len() as i128,
-                    ty: IrType::I64,
-                }),
-            },
-            expr.span,
-        );
+        let buffer = self.emit_value(IrType::Ptr, span, |dest| InstKind::Alloc {
+            dest,
+            size: crate::list_buffer_size(count),
+        });
         for (index, value) in values.into_iter().enumerate() {
             self.push(
                 InstKind::Store {
-                    address: list.clone(),
+                    address: buffer.clone(),
                     offset: crate::element_offset(index as u32),
                     value,
                 },
-                expr.span,
+                span,
             );
         }
+
+        let list = self.emit_value(IrType::Ptr, span, |dest| InstKind::Alloc {
+            dest,
+            size: noto_runtime::LIST_HEADER_SIZE,
+        });
+        let word = |value: i128| Operand::Const(Const::Int { value, ty: IrType::I64 });
+        self.push(
+            InstKind::Store {
+                address: list.clone(),
+                offset: noto_runtime::LIST_LENGTH_OFFSET as u32,
+                value: word(count as i128),
+            },
+            span,
+        );
+        // The buffer is never smaller than one element, so a literal's
+        // capacity is what it actually holds.
+        self.push(
+            InstKind::Store {
+                address: list.clone(),
+                offset: noto_runtime::LIST_CAPACITY_OFFSET as u32,
+                value: word(count.max(1) as i128),
+            },
+            span,
+        );
+        self.push(
+            InstKind::Store {
+                address: list.clone(),
+                offset: noto_runtime::LIST_DATA_OFFSET as u32,
+                value: buffer,
+            },
+            span,
+        );
 
         list
     }
@@ -1102,12 +1126,11 @@ impl Builder<'_> {
         })
     }
 
-    /// Evaluates a list and an index, checks the index, and produces the base
-    /// pointer already advanced to the element.
+    /// Evaluates a list and an index, checks the index, and produces the
+    /// address of that element.
     ///
-    /// The offset returned is the fixed header size: the element's own offset
-    /// is folded into the pointer, because the index is not known until it
-    /// runs.
+    /// The offset returned is always zero: the element's position is folded
+    /// into the pointer, because the index is not known until it runs.
     fn lower_element_address(
         &mut self,
         target: &Expr,
@@ -1120,7 +1143,7 @@ impl Builder<'_> {
         let length = self.emit_value(IrType::I64, span, |dest| InstKind::Load {
             dest,
             address: list.clone(),
-            offset: 0,
+            offset: noto_runtime::LIST_LENGTH_OFFSET as u32,
         });
         self.push(
             InstKind::Intrinsic {
@@ -1131,8 +1154,11 @@ impl Builder<'_> {
             span,
         );
 
-        // address = list + index * 8, so the load below reads at the header
-        // size past it.
+        let buffer = self.emit_value(IrType::Ptr, span, |dest| InstKind::Load {
+            dest,
+            address: list,
+            offset: noto_runtime::LIST_DATA_OFFSET as u32,
+        });
         let scaled = self.emit_value(IrType::I64, span, |dest| InstKind::Binary {
             dest,
             op: BinOp::Mul,
@@ -1145,11 +1171,11 @@ impl Builder<'_> {
         let address = self.emit_value(IrType::Ptr, span, |dest| InstKind::Binary {
             dest,
             op: BinOp::Add,
-            left: list,
+            left: buffer,
             right: scaled,
         });
 
-        (address, crate::FIELD_SIZE)
+        (address, 0)
     }
 
     /// Lowers `Point(1, 2)` to an allocation followed by one store per field.
@@ -1258,7 +1284,7 @@ impl Builder<'_> {
             return self.emit_value(IrType::I64, expr.span, |dest| InstKind::Load {
                 dest,
                 address: list,
-                offset: 0,
+                offset: noto_runtime::LIST_LENGTH_OFFSET as u32,
             });
         }
 
@@ -1350,6 +1376,7 @@ fn intrinsic_for(builtin: Builtin) -> Intrinsic {
         // Handled by `lower_member`, which reads the length rather than
         // calling anything.
         Builtin::ListLength => Intrinsic::StringLength,
+        Builtin::ListPush => Intrinsic::ListPush,
         Builtin::PrintString => Intrinsic::PrintString,
         Builtin::PrintlnString => Intrinsic::PrintlnString,
         Builtin::PrintInt => Intrinsic::PrintInt,

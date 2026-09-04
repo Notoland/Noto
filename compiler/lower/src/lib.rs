@@ -208,18 +208,18 @@ pub fn field_offset(index: u32) -> u32 {
     index * FIELD_SIZE
 }
 
-/// The size in bytes of a list of `count` elements.
+/// The size in bytes of the buffer holding `count` elements.
 ///
-/// The length takes the first word and the elements follow it, one word
-/// each — the same shape a string has, and the same rule an object's fields
-/// follow.
-pub fn list_size(count: usize) -> u32 {
-    (1 + count as u32) * FIELD_SIZE
+/// A list is a header — length, capacity, and a pointer — with its elements
+/// in a block of their own. The indirection is what lets a list grow: `push`
+/// replaces the block, and every pointer to the list itself stays valid.
+pub fn list_buffer_size(count: usize) -> u32 {
+    (count.max(1) as u32) * FIELD_SIZE
 }
 
-/// The byte offset of the element at `index`.
+/// The byte offset of the element at `index` within the buffer.
 pub fn element_offset(index: u32) -> u32 {
-    (1 + index) * FIELD_SIZE
+    index * FIELD_SIZE
 }
 
 /// The size in bytes of an enum whose widest case carries `fields` values.

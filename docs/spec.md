@@ -216,9 +216,21 @@ readings[0] = 15
 for x in readings { println(x) }
 ```
 
-`[T]` is a fixed-length sequence of `T`: a pointer to its length followed by
-its elements, one machine word each. A literal takes its element type from
-its first element, and every later element must fit that type. An empty
+`[T]` is a sequence of `T`. A list is a header — its length, its capacity,
+and a pointer to its elements — with the elements in a block of their own.
+The indirection is what lets `push` grow one: replacing the block leaves
+every pointer to the list itself valid, so a list passed to a function and
+appended to there is the same list the caller holds.
+
+```noto
+val out: [Int] = []
+out.push(1)
+out.push(2)
+```
+
+A full buffer doubles, so a run of pushes costs a constant amount each on
+average. A literal takes its element type from its first element, and every
+later element must fit that type. An empty
 literal has nothing to infer from, so it takes its type from where it is used
 and is an error where nothing expects one — `val xs: [Int] = []`.
 
@@ -232,8 +244,8 @@ writing an `Any` through the second would break the first. A literal is a
 different matter — it is built to fit what is expected of it, so passing
 `[1, 2]` where `[Any]` is wanted is fine.
 
-Not implemented: growing a list (`push`), slicing, concatenation, and
-literals of a length not known where they are written.
+A list has two members so far: `length` and `push`. Not implemented: removing
+an element, slicing, concatenation, and searching.
 
 ## Statements and termination
 

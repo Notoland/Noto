@@ -58,6 +58,28 @@ pub const STRING_LENGTH_OFFSET: i32 = 0;
 /// Byte offset of a string object's first byte.
 pub const STRING_DATA_OFFSET: i32 = 8;
 
+/// Byte offset of a list's length.
+pub const LIST_LENGTH_OFFSET: i32 = 0;
+
+/// Byte offset of a list's capacity: how many elements its buffer holds.
+pub const LIST_CAPACITY_OFFSET: i32 = 8;
+
+/// Byte offset of the pointer to a list's elements.
+///
+/// The elements live in a separate block so that growing a list can replace
+/// that block without invalidating the pointer everything holding the list
+/// already has.
+pub const LIST_DATA_OFFSET: i32 = 16;
+
+/// The size of a list's header, in bytes.
+pub const LIST_HEADER_SIZE: u32 = 24;
+
+/// How many elements a list's first buffer holds.
+///
+/// Small enough that a list of two or three costs little, large enough that
+/// the first few pushes do not each reallocate.
+pub const LIST_INITIAL_CAPACITY: i64 = 4;
+
 /// The alignment every heap allocation is given.
 ///
 /// Eight bytes is enough for every value Noto stores today and keeps the bump
@@ -117,6 +139,9 @@ pub enum Routine {
     StringConcat,
     /// `string_length(string) -> length`.
     StringLength,
+    /// `list_push(list, value)`. Appends one element, growing the buffer
+    /// when it is full.
+    ListPush,
     /// `index_check(index, length)`. Ends the process when the index is
     /// outside `0..length`.
     ///
@@ -157,6 +182,7 @@ impl Routine {
             StringConcat,
             StringLength,
             StringEquals,
+            ListPush,
             IndexCheck,
             Assert,
             Newline,
@@ -184,6 +210,7 @@ impl Routine {
             StringLength => "noto_rt_string_length",
             StringEquals => "noto_rt_string_equals",
             IndexCheck => "noto_rt_index_check",
+            ListPush => "noto_rt_list_push",
             Assert => "noto_rt_assert",
             Newline => "noto_rt_newline",
         }
@@ -196,7 +223,7 @@ impl Routine {
             Start | PrintlnEmpty | Newline => 0,
             Exit | Alloc | PrintString | PrintlnString | PrintInt | PrintlnInt | PrintBool
             | PrintlnBool | IntToString | BoolToString | StringLength | Assert => 1,
-            StringConcat | StringEquals | IndexCheck => 2,
+            StringConcat | StringEquals | IndexCheck | ListPush => 2,
             Write => 3,
         }
     }
