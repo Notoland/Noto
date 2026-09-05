@@ -88,7 +88,8 @@ pub fn lower_program(
         // A synthesised `Class.<init>` has no block: its body is the class's
         // field initialisers, built here rather than parsed.
         if let Some(class) = info.init_of {
-            let mut builder = Builder::new(analysis, &mut program, sink, &function_ids, ir_id);
+            let mut builder =
+                Builder::new(analysis, &mut program, sink, &function_ids, ir_id, semantic_id);
             builder.lower_initializer(semantic_id, class, &declarations);
             continue;
         }
@@ -105,7 +106,8 @@ pub fn lower_program(
             continue;
         };
 
-        let mut builder = Builder::new(analysis, &mut program, sink, &function_ids, ir_id);
+        let mut builder =
+            Builder::new(analysis, &mut program, sink, &function_ids, ir_id, semantic_id);
         builder.lower_function(semantic_id, body);
     }
 
@@ -124,9 +126,23 @@ pub(crate) fn find_initializer(
         .find(|expr| expr.id == id)
 }
 
+/// The byte offset of a closure's code pointer.
+pub const CLOSURE_CODE_OFFSET: u32 = 0;
+
+/// The byte offset of the capture at `index` within a closure.
+pub fn capture_offset(index: u32) -> u32 {
+    (1 + index) * FIELD_SIZE
+}
+
+/// The size in bytes of a closure holding `captures` values.
+pub fn closure_size(captures: usize) -> u32 {
+    (1 + captures as u32) * FIELD_SIZE
+}
+
 /// Indexes every block that serves as a function or test body.
 fn collect_bodies(module: &Module) -> HashMap<NodeId, &noto_ast::Block> {
     let mut bodies = HashMap::new();
+    collect_lambda_bodies(module, &mut bodies);
     for item in &module.items {
         match &item.kind {
             ItemKind::Fn(function) => {
@@ -159,6 +175,30 @@ fn collect_bodies(module: &Module) -> HashMap<NodeId, &noto_ast::Block> {
         }
     }
     bodies
+}
+
+/// Indexes every lambda body in a module.
+///
+/// A lambda is an expression, so its body is nested arbitrarily deep rather
+/// than sitting under a declaration like every other body.
+fn collect_lambda_bodies<'a>(
+    module: &'a Module,
+    bodies: &mut HashMap<NodeId, &'a noto_ast::Block>,
+) {
+    struct Lambdas<'ast, 'a> {
+        bodies: &'a mut HashMap<NodeId, &'ast noto_ast::Block>,
+    }
+
+    impl<'ast> noto_ast::visit::Visitor<'ast> for Lambdas<'ast, '_> {
+        fn visit_expr(&mut self, expr: &'ast noto_ast::Expr) {
+            if let noto_ast::ExprKind::Lambda(lambda) = &expr.kind {
+                self.bodies.insert(lambda.body.id, &lambda.body);
+            }
+            noto_ast::visit::walk_expr(self, expr);
+        }
+    }
+
+    noto_ast::visit::Visitor::visit_module(&mut Lambdas { bodies }, module);
 }
 
 /// Maps a source type onto its machine representation.
@@ -267,6 +307,8 @@ pub(crate) struct Builder<'a> {
     slots: HashMap<LocalId, SlotId>,
     /// The blocks `break` and `continue` jump to, innermost last.
     pub(crate) loops: Vec<LoopTargets>,
+    /// Which analysed function is being built, needed to read its captures.
+    semantic: FunctionId,
 }
 
 /// Where `break` and `continue` go inside one loop.
@@ -285,6 +327,7 @@ impl<'a> Builder<'a> {
         sink: &'a mut DiagnosticSink,
         function_ids: &'a HashMap<FunctionId, FuncId>,
         current: FuncId,
+        semantic: FunctionId,
     ) -> Self {
         Builder {
             analysis,
@@ -295,7 +338,13 @@ impl<'a> Builder<'a> {
             block: BlockId(0),
             slots: HashMap::new(),
             loops: Vec::new(),
+            semantic,
         }
+    }
+
+    /// Which analysed function is being built.
+    pub(crate) fn semantic_function(&self) -> FunctionId {
+        self.semantic
     }
 
     /// Lowers a whole function body.
@@ -525,7 +574,7 @@ impl<'a> Builder<'a> {
                 codes::UNSUPPORTED_CONSTRUCT,
                 format!("{what} cannot be compiled to native code yet"),
             )
-            .with_primary(span, "not implemented in Noto 0.9"),
+            .with_primary(span, "not implemented in Noto 0.10"),
         );
         Operand::Const(Const::Unit)
     }

@@ -273,7 +273,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "declarations inside a function body are not supported yet",
                     )
-                    .with_primary(stmt.span, "not implemented in Noto 0.9")
+                    .with_primary(stmt.span, "not implemented in Noto 0.10")
                     .with_help("move the declaration to the top level of the file"),
                 );
                 self.store.unit()
@@ -357,7 +357,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this pattern is not supported in a binding yet",
                     )
-                    .with_primary(pattern.span, "not implemented in Noto 0.9")
+                    .with_primary(pattern.span, "not implemented in Noto 0.10")
                     .with_help("bind a name, a tuple of names, or `_`"),
                 );
             }
@@ -384,7 +384,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         format!("cannot iterate over a `{rendered}` yet"),
                     )
-                    .with_primary(iterable.span, "not iterable in Noto 0.9")
+                    .with_primary(iterable.span, "not iterable in Noto 0.10")
                     .with_help("iterate over a range, as in `for i in 0..10`"),
                 );
                 self.store.error()
@@ -455,10 +455,11 @@ impl Checker<'_> {
                     let ty = self.check_expr_expecting(bound, int);
                     self.expect_assignable(ty, int, bound.span, None);
                 }
-                // Ranges exist only inside `for` and `when` in Noto 0.9; there
+                // Ranges exist only inside `for` and `when` in Noto 0.10; there
                 // is no first-class `Range` type to give them yet.
                 self.store.unit()
             }
+            ExprKind::Lambda(lambda) => self.check_lambda(expr, lambda, expected),
             ExprKind::ListLiteral(items) => self.check_list_literal(items, expr.span, expected),
             ExprKind::Index { target, index } => self.check_index(target, index, expr.span),
             ExprKind::Tuple(items) => {
@@ -475,7 +476,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this expression is not supported by this compiler yet",
                     )
-                    .with_primary(expr.span, "not implemented in Noto 0.9"),
+                    .with_primary(expr.span, "not implemented in Noto 0.10"),
                 );
                 self.store.error()
             }
@@ -490,6 +491,7 @@ impl Checker<'_> {
         match self.scopes.lookup(crate::RECEIVER_NAME) {
             Some(Resolution::Local(local)) => {
                 self.record_resolution(expr.id, Resolution::Local(local));
+                self.note_capture(local);
                 self.locals[local.0 as usize].ty
             }
             _ => {
@@ -503,6 +505,171 @@ impl Checker<'_> {
                 self.store.error()
             }
         }
+    }
+
+    /// Records that the function being checked reads a local from an
+    /// enclosing one.
+    ///
+    /// That is what a capture is, and noticing it here rather than in a
+    /// separate pass means it is noticed wherever a name resolves — in a
+    /// nested lambda as much as a plain one.
+    fn note_capture(&mut self, local: crate::LocalId) {
+        let Some(current) = self.current_function else { return };
+        if self.locals[local.0 as usize].function == current {
+            return;
+        }
+        let info = &mut self.functions[current.0 as usize];
+        if !info.captures.contains(&local) {
+            info.captures.push(local);
+        }
+    }
+
+    /// Checks `{ n -> n * 2 }` and `{ it * 2 }`.
+    ///
+    /// A lambda becomes a function like any other, with one extra parameter
+    /// in front: the environment holding what it captured. Nothing about
+    /// calling it differs from calling a declared function, which is what
+    /// keeps the rest of the checker unchanged.
+    fn check_lambda(
+        &mut self,
+        expr: &Expr,
+        lambda: &noto_ast::LambdaExpr,
+        expected: Option<TypeId>,
+    ) -> TypeId {
+        if lambda.is_async {
+            self.sink.emit(
+                Diagnostic::error(
+                    codes::UNSUPPORTED_CONSTRUCT,
+                    "an async lambda is not supported by this compiler yet",
+                )
+                .with_primary(expr.span, "not implemented in Noto 0.10"),
+            );
+            return self.store.error();
+        }
+
+        // What is expected of it says what its parameters hold, which is what
+        // lets `{ it * 2 }` be written without a type anywhere.
+        let wanted = expected.and_then(|ty| match self.store.get(ty).clone() {
+            Type::Function { parameters, result, .. } => Some((parameters, result)),
+            _ => None,
+        });
+
+        let id = FunctionId(self.functions.len() as u32);
+        let unit = self.store.unit();
+        self.functions.push(crate::FunctionInfo {
+            name: format!("lambda${}", id.0),
+            module: self.current_module,
+            is_exported: false,
+            is_lambda: true,
+            captures: Vec::new(),
+            parameters: Vec::new(),
+            result: unit,
+            locals: Vec::new(),
+            body: Some(lambda.body.id),
+            init_of: None,
+            is_async: false,
+            span: expr.span,
+        });
+
+        let previous_function = self.current_function.replace(id);
+        let previous_result = self.expected_result;
+        self.scopes.push();
+
+        // The environment is the first parameter. It is bound like any other
+        // local so that lowering gives it a slot without a special case.
+        let any = self.store.any();
+        let environment =
+            self.declare_local(crate::ENVIRONMENT_NAME, any, false, true, expr.span);
+        self.functions[id.0 as usize].parameters.push(environment);
+
+        let declared: Vec<TypeId> = if lambda.parameters.is_empty() {
+            // No parameter list means one argument, bound to `it`.
+            let ty = wanted
+                .as_ref()
+                .and_then(|(parameters, _)| parameters.first().copied())
+                .unwrap_or_else(|| self.store.error());
+            if wanted.is_none() {
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::CANNOT_INFER,
+                        "nothing here says what `it` holds",
+                    )
+                    .with_primary(expr.span, "no expected type to take it from")
+                    .with_help("write the parameter: `{ n: Int -> .. }`"),
+                );
+            }
+            let local =
+                self.declare_local(crate::IMPLICIT_PARAMETER, ty, false, true, expr.span);
+            self.functions[id.0 as usize].parameters.push(local);
+            vec![ty]
+        } else {
+            let mut types = Vec::new();
+            for (index, parameter) in lambda.parameters.iter().enumerate() {
+                let ty = match &parameter.ty {
+                    Some(ty) => self.resolve_type(ty),
+                    None => match wanted.as_ref().and_then(|(p, _)| p.get(index).copied()) {
+                        Some(ty) => ty,
+                        None => {
+                            self.sink.emit(
+                                Diagnostic::error(
+                                    codes::CANNOT_INFER,
+                                    format!("nothing here says what `{}` holds", parameter.name.name),
+                                )
+                                .with_primary(parameter.span, "no type to infer from")
+                                .with_help("write it, as in `{ n: Int -> .. }`"),
+                            );
+                            self.store.error()
+                        }
+                    },
+                };
+                let local =
+                    self.declare_local(&parameter.name.name, ty, false, true, parameter.span);
+                self.functions[id.0 as usize].parameters.push(local);
+                types.push(ty);
+            }
+            types
+        };
+
+        let declared_result = lambda.result.as_ref().map(|ty| self.resolve_type(ty));
+        self.expected_result = declared_result.unwrap_or(unit);
+
+        let body_type = self.check_block(&lambda.body);
+        self.scopes.pop();
+        self.current_function = previous_function;
+        self.expected_result = previous_result;
+
+        let result = match declared_result {
+            Some(declared) => {
+                if !self.store.is_assignable(body_type, declared) {
+                    let (expected, found) =
+                        (self.store.render(declared), self.store.render(body_type));
+                    self.sink.emit(
+                        Diagnostic::error(
+                            codes::MISSING_RETURN,
+                            format!("this lambda must produce a `{expected}`"),
+                        )
+                        .with_primary(lambda.body.span, format!("found `{found}`")),
+                    );
+                }
+                declared
+            }
+            None => body_type,
+        };
+        self.functions[id.0 as usize].result = result;
+
+        // Anything the lambda captured, the enclosing function reads too: it
+        // has to be alive there to be copied into the environment.
+        let captures = self.functions[id.0 as usize].captures.clone();
+        for local in captures {
+            self.note_capture(local);
+        }
+
+        self.record_resolution(expr.id, Resolution::Function(id));
+        self.store.intern(Type::Function {
+            parameters: declared,
+            result,
+            is_async: false,
+        })
     }
 
     /// Checks `[a, b, c]`.
@@ -575,6 +742,13 @@ impl Checker<'_> {
         name: &noto_ast::Ident,
         element: TypeId,
     ) -> TypeId {
+        // `map`, `filter` and friends take a function of the element type,
+        // and `map` produces a list of whatever that function produces. No
+        // fixed signature can say that either, so they are checked here.
+        if matches!(name.name.as_str(), "map" | "filter" | "each") {
+            return self.check_list_lambda_method(expr, call, name, element);
+        }
+
         if name.name != "push" {
             let rendered = self.store.render(element);
             self.sink.emit(
@@ -583,7 +757,7 @@ impl Checker<'_> {
                     format!("`[{rendered}]` has no method `{}`", name.name),
                 )
                 .with_primary(name.span, "no such method")
-                .with_note("a list has `push` and `length`"),
+                .with_note("a list has `length`, `push`, `map`, `filter` and `each`"),
             );
             for argument in &call.arguments {
                 self.check_expr(&argument.value);
@@ -599,6 +773,92 @@ impl Checker<'_> {
 
         self.record_resolution(call.callee.id, Resolution::Builtin(builtins::Builtin::ListPush));
         self.store.unit()
+    }
+
+    /// Checks a list method taking a function of the element.
+    fn check_list_lambda_method(
+        &mut self,
+        expr: &Expr,
+        call: &noto_ast::CallExpr,
+        name: &noto_ast::Ident,
+        element: TypeId,
+    ) -> TypeId {
+        let (bool_ty, unit, int) = (self.store.bool(), self.store.unit(), self.store.int());
+        // What the function must produce: `map` accepts anything, the rest
+        // ask a question or ask for an effect.
+        let wanted_result = match name.name.as_str() {
+            "map" => None,
+            "each" => Some(unit),
+            _ => Some(bool_ty),
+        };
+        let _ = int;
+
+        self.check_argument_count(expr.span, call.arguments.len(), 1, &name.name);
+        let Some(argument) = call.arguments.first() else {
+            return self.store.error();
+        };
+
+        let expected = self.store.intern(Type::Function {
+            parameters: vec![element],
+            result: wanted_result.unwrap_or(unit),
+            is_async: false,
+        });
+        let found = self.check_expr_expecting(&argument.value, expected);
+
+        let Type::Function { parameters, result, .. } = self.store.get(found).clone() else {
+            if !self.store.get(found).is_error() {
+                let rendered = self.store.render(found);
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::TYPE_MISMATCH,
+                        format!("`{}` needs a function, not a `{rendered}`", name.name),
+                    )
+                    .with_primary(argument.value.span, "not a function")
+                    .with_help(format!("pass one: `{{ it -> .. }}`")),
+                );
+            }
+            return self.store.error();
+        };
+
+        if parameters.len() != 1 || !self.store.is_assignable(element, parameters[0]) {
+            let (wanted, got) = (self.store.render(element), self.store.render(found));
+            self.sink.emit(
+                Diagnostic::error(
+                    codes::TYPE_MISMATCH,
+                    format!("`{}` calls its function with a `{wanted}`", name.name),
+                )
+                .with_primary(argument.value.span, format!("this is a `{got}`")),
+            );
+            return self.store.error();
+        }
+
+        if let Some(wanted) = wanted_result {
+            if !self.store.is_assignable(result, wanted) {
+                let (wanted, got) = (self.store.render(wanted), self.store.render(result));
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::TYPE_MISMATCH,
+                        format!("`{}` needs a function producing a `{wanted}`", name.name),
+                    )
+                    .with_primary(argument.value.span, format!("this one produces a `{got}`")),
+                );
+                return self.store.error();
+            }
+        }
+
+        // The name is one of a fixed set, matched just above, so this is a
+        // lookup rather than a leak.
+        let which: &'static str = match name.name.as_str() {
+            "map" => "map",
+            "filter" => "filter",
+            _ => "each",
+        };
+        self.record_resolution(call.callee.id, Resolution::ListMethod(which));
+        match which {
+            "map" => self.store.intern(Type::List(result)),
+            "filter" => self.store.intern(Type::List(element)),
+            _ => unit,
+        }
     }
 
     /// Checks `xs[i]`.
@@ -706,6 +966,7 @@ impl Checker<'_> {
         match self.lookup_value(&name) {
             Some(Resolution::Local(local)) => {
                 self.record_resolution(expr.id, Resolution::Local(local));
+                self.note_capture(local);
                 self.locals[local.0 as usize].ty
             }
             Some(Resolution::Const(id)) => {
@@ -908,7 +1169,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "`in` is not supported outside a `when` arm yet",
                     )
-                    .with_primary(span, "not implemented in Noto 0.9"),
+                    .with_primary(span, "not implemented in Noto 0.10"),
                 );
                 bool_ty
             }
@@ -1012,6 +1273,26 @@ impl Checker<'_> {
         // Assigning to a `val` is the mistake `val` exists to catch, so the
         // message names the declaration.
         if let Some(Resolution::Local(local)) = self.resolutions.get(&target.id).copied() {
+            // A lambda captures by value, so a write here would change the
+            // copy and leave the original alone — which is never what anyone
+            // means by it.
+            let owner = self.locals[local.0 as usize].function;
+            if self.current_function.is_some_and(|current| current != owner) {
+                let (name, declared_at) =
+                    (self.locals[local.0 as usize].name.clone(), self.locals[local.0 as usize].span);
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::REASSIGNED_VAL,
+                        format!("cannot assign to `{name}` from inside a lambda"),
+                    )
+                    .with_primary(span, "assigned here")
+                    .with_secondary(declared_at, "declared outside the lambda")
+                    .with_note("a lambda captures by value, so this would change its own copy")
+                    .with_help("return the new value instead, or hold it in an object"),
+                );
+                return self.store.unit();
+            }
+
             let info = &self.locals[local.0 as usize];
             if !info.is_mutable {
                 let (name, declared_at, is_parameter) =
@@ -1338,7 +1619,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this pattern is not supported by this compiler yet",
                     )
-                    .with_primary(pattern.span, "not implemented in Noto 0.9"),
+                    .with_primary(pattern.span, "not implemented in Noto 0.10"),
                 );
             }
         }
@@ -1498,7 +1779,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "explicit type arguments are not supported by this compiler yet",
                 )
-                .with_primary(expr.span, "not implemented in Noto 0.9"),
+                .with_primary(expr.span, "not implemented in Noto 0.10"),
             );
         }
 
@@ -1509,7 +1790,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "named arguments are not supported by this compiler yet",
                     )
-                    .with_primary(name.span, "not implemented in Noto 0.9")
+                    .with_primary(name.span, "not implemented in Noto 0.10")
                     .with_help("pass the arguments positionally"),
                 );
             }
@@ -1577,7 +1858,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "safe calls are not supported by this compiler yet",
                     )
-                    .with_primary(expr.span, "not implemented in Noto 0.9"),
+                    .with_primary(expr.span, "not implemented in Noto 0.10"),
                 );
                 return self.store.error();
             }
@@ -2203,7 +2484,7 @@ impl Checker<'_> {
                                 codes::UNSUPPORTED_CONSTRUCT,
                                 "safe property access is not supported by this compiler yet",
                             )
-                            .with_primary(expr.span, "not implemented in Noto 0.9"),
+                            .with_primary(expr.span, "not implemented in Noto 0.10"),
                         );
                         return self.store.error();
                     }
@@ -2238,7 +2519,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "safe field access is not supported by this compiler yet",
                     )
-                    .with_primary(expr.span, "not implemented in Noto 0.9"),
+                    .with_primary(expr.span, "not implemented in Noto 0.10"),
                 );
                 return self.store.error();
             }

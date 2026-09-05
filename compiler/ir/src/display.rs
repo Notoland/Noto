@@ -97,6 +97,18 @@ fn render_inst(inst: &Inst) -> String {
                 let _ = write!(out, " {argument}");
             }
         }
+        InstKind::FuncAddr { dest, function } => {
+            let _ = write!(out, "%{} = addr fn{}", dest.0, function.0);
+        }
+        InstKind::CallIndirect { dest, target, arguments } => {
+            if let Some(dest) = dest {
+                let _ = write!(out, "%{} = ", dest.0);
+            }
+            let _ = write!(out, "call {target}");
+            for argument in arguments {
+                let _ = write!(out, " {argument}");
+            }
+        }
         InstKind::Alloc { dest, size } => {
             let _ = write!(out, "%{} = alloc {size}", dest.0);
         }

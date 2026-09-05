@@ -204,8 +204,8 @@ impl Usage<'_> {
     }
 }
 
-impl Visitor for Usage<'_> {
-    fn visit_expr(&mut self, expr: &Expr) {
+impl<'ast> Visitor<'ast> for Usage<'_> {
+    fn visit_expr(&mut self, expr: &'ast Expr) {
         match &expr.kind {
             // `this` names the receiver, which is a local like any other.
             ExprKind::Path(_) | ExprKind::This => match self.analysis.resolution(expr.id) {

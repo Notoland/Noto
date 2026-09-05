@@ -8,7 +8,7 @@
 //!
 //! # The allocator
 //!
-//! Noto 0.9 allocates from a bump pointer over regions obtained with `mmap`
+//! Noto 0.10 allocates from a bump pointer over regions obtained with `mmap`
 //! and never frees. That is enough to run programs that build strings, and it
 //! is deliberately the simplest thing that is correct while the memory model
 //! is being designed; see `docs/rfcs/0002-memory-model.md`.
@@ -208,6 +208,9 @@ pub fn emit(
     emit_string_byte_at(assembler, labels);
     emit_string_slice(assembler, labels);
     emit_list_push(assembler, labels);
+    emit_list_walk(assembler, labels, Routine::ListMap);
+    emit_list_walk(assembler, labels, Routine::ListFilter);
+    emit_list_walk(assembler, labels, Routine::ListEach);
     emit_index_check(assembler, labels, data);
     emit_assert(assembler, labels, data);
 }
@@ -1278,6 +1281,124 @@ fn emit_list_push(assembler: &mut Assembler, labels: &RuntimeLabels) {
     assembler.add_imm(Reg::Rcx, 1);
     assembler.mov_mem_reg(Reg::Rdi, LIST_LENGTH_OFFSET, Reg::Rcx);
 
+    epilogue(assembler);
+}
+
+/// The three list walks, which differ only in what they do with what the
+/// closure returns.
+///
+/// `map` keeps it, `filter` keeps the element when it is true, and `each`
+/// keeps nothing. Sharing the walk keeps the three in step: a fix to how a
+/// closure is called is a fix to all of them.
+fn emit_list_walk(assembler: &mut Assembler, labels: &RuntimeLabels, routine: Routine) {
+    begin(assembler, labels, routine);
+    prologue(assembler, 8);
+
+    let list = -8;
+    let closure = -16;
+    let length = -24;
+    let index = -32;
+    let output = -40;
+    let buffer = -48;
+    let kept = -56;
+
+    let keeps_result = routine == Routine::ListMap;
+    let builds = routine != Routine::ListEach;
+
+    assembler.mov_mem_reg(Reg::Rbp, list, Reg::Rdi);
+    assembler.mov_mem_reg(Reg::Rbp, closure, Reg::Rsi);
+    assembler.mov_reg_mem(Reg::Rcx, Reg::Rdi, LIST_LENGTH_OFFSET);
+    assembler.mov_mem_reg(Reg::Rbp, length, Reg::Rcx);
+    assembler.mov_reg_imm64(Reg::Rax, 0);
+    assembler.mov_mem_reg(Reg::Rbp, index, Reg::Rax);
+    assembler.mov_mem_reg(Reg::Rbp, kept, Reg::Rax);
+
+    if builds {
+        // The result never has more elements than the input, so one buffer of
+        // that size is enough however many are kept.
+        assembler.mov_reg_mem(Reg::Rdi, Reg::Rbp, length);
+        let sized = assembler.label();
+        assembler.cmp_imm(Reg::Rdi, 0);
+        assembler.jcc(Cond::Ne, sized);
+        assembler.mov_reg_imm64(Reg::Rdi, 1);
+        assembler.bind(sized);
+        times_eight(assembler, Reg::Rdi);
+        assembler.call(labels.get(Routine::Alloc));
+        assembler.mov_mem_reg(Reg::Rbp, buffer, Reg::Rax);
+
+        assembler.mov_reg_imm64(Reg::Rdi, LIST_HEADER_SIZE as i64);
+        assembler.call(labels.get(Routine::Alloc));
+        assembler.mov_mem_reg(Reg::Rbp, output, Reg::Rax);
+        assembler.mov_reg_mem(Reg::Rcx, Reg::Rbp, length);
+        let capacity = assembler.label();
+        assembler.cmp_imm(Reg::Rcx, 0);
+        assembler.jcc(Cond::Ne, capacity);
+        assembler.mov_reg_imm64(Reg::Rcx, 1);
+        assembler.bind(capacity);
+        assembler.mov_mem_reg(Reg::Rax, LIST_CAPACITY_OFFSET, Reg::Rcx);
+        assembler.mov_reg_mem(Reg::Rdx, Reg::Rbp, buffer);
+        assembler.mov_mem_reg(Reg::Rax, LIST_DATA_OFFSET, Reg::Rdx);
+    }
+
+    let each = assembler.label();
+    let finished = assembler.label();
+    let skip = assembler.label();
+
+    assembler.bind(each);
+    assembler.mov_reg_mem(Reg::Rax, Reg::Rbp, index);
+    assembler.mov_reg_mem(Reg::Rcx, Reg::Rbp, length);
+    assembler.cmp(Reg::Rax, Reg::Rcx);
+    assembler.jcc(Cond::Ge, finished);
+
+    // element = list.data[index]
+    assembler.mov_reg_mem(Reg::Rdx, Reg::Rbp, list);
+    assembler.mov_reg_mem(Reg::Rdx, Reg::Rdx, LIST_DATA_OFFSET);
+    assembler.mov_reg_reg(Reg::Rsi, Reg::Rax);
+    times_eight(assembler, Reg::Rsi);
+    assembler.add(Reg::Rdx, Reg::Rsi);
+    assembler.mov_reg_mem(Reg::Rsi, Reg::Rdx, 0);
+
+    // The closure is its own environment, and its first word is the code.
+    assembler.mov_reg_mem(Reg::Rdi, Reg::Rbp, closure);
+    assembler.mov_reg_mem(Reg::R11, Reg::Rdi, 0);
+    assembler.call_reg(Reg::R11);
+
+    if builds {
+        if !keeps_result {
+            // `filter` keeps the element, and only when the answer was true.
+            assembler.cmp_imm(Reg::Rax, 0);
+            assembler.jcc(Cond::Eq, skip);
+            assembler.mov_reg_mem(Reg::Rdx, Reg::Rbp, list);
+            assembler.mov_reg_mem(Reg::Rdx, Reg::Rdx, LIST_DATA_OFFSET);
+            assembler.mov_reg_mem(Reg::Rsi, Reg::Rbp, index);
+            times_eight(assembler, Reg::Rsi);
+            assembler.add(Reg::Rdx, Reg::Rsi);
+            assembler.mov_reg_mem(Reg::Rax, Reg::Rdx, 0);
+        }
+        assembler.mov_reg_mem(Reg::Rdx, Reg::Rbp, buffer);
+        assembler.mov_reg_mem(Reg::Rsi, Reg::Rbp, kept);
+        times_eight(assembler, Reg::Rsi);
+        assembler.add(Reg::Rdx, Reg::Rsi);
+        assembler.mov_mem_reg(Reg::Rdx, 0, Reg::Rax);
+        assembler.mov_reg_mem(Reg::Rcx, Reg::Rbp, kept);
+        assembler.add_imm(Reg::Rcx, 1);
+        assembler.mov_mem_reg(Reg::Rbp, kept, Reg::Rcx);
+    }
+
+    assembler.bind(skip);
+    assembler.mov_reg_mem(Reg::Rcx, Reg::Rbp, index);
+    assembler.add_imm(Reg::Rcx, 1);
+    assembler.mov_mem_reg(Reg::Rbp, index, Reg::Rcx);
+    assembler.jmp(each);
+    assembler.bind(finished);
+
+    if builds {
+        assembler.mov_reg_mem(Reg::Rax, Reg::Rbp, output);
+        assembler.mov_reg_mem(Reg::Rcx, Reg::Rbp, kept);
+        assembler.mov_mem_reg(Reg::Rax, LIST_LENGTH_OFFSET, Reg::Rcx);
+    } else {
+        assembler.mov_reg_imm64(Reg::Rax, 0);
+    }
     epilogue(assembler);
 }
 

@@ -266,6 +266,23 @@ impl<'a> FunctionGenerator<'a> {
                     self.assembler.mov_mem_reg(Reg::Rbp, offset, Reg::Rax);
                 }
             }
+            InstKind::FuncAddr { dest, function } => {
+                let label = self.function_labels[function];
+                self.assembler.lea_code(LEFT, label);
+                let offset = self.value_offset(*dest);
+                self.assembler.mov_mem_reg(Reg::Rbp, offset, LEFT);
+            }
+            InstKind::CallIndirect { dest, target, arguments } => {
+                self.emit_call_arguments(arguments)?;
+                // The target is loaded after the arguments, into a register
+                // the ABI does not pass anything in.
+                self.load_operand(Reg::R11, target);
+                self.assembler.call_reg(Reg::R11);
+                if let Some(dest) = dest {
+                    let offset = self.value_offset(*dest);
+                    self.assembler.mov_mem_reg(Reg::Rbp, offset, Reg::Rax);
+                }
+            }
             InstKind::Alloc { dest, size } => {
                 // The bump allocator takes the size in the first ABI register
                 // and returns the pointer in Rax, like any other routine.
@@ -480,6 +497,9 @@ fn routine_for(intrinsic: Intrinsic) -> Routine {
         Intrinsic::StringByteAt => Routine::StringByteAt,
         Intrinsic::StringSlice => Routine::StringSlice,
         Intrinsic::Args => Routine::Args,
+        Intrinsic::ListMap => Routine::ListMap,
+        Intrinsic::ListFilter => Routine::ListFilter,
+        Intrinsic::ListEach => Routine::ListEach,
         Intrinsic::ReadFile => Routine::ReadFile,
         Intrinsic::WriteFile => Routine::WriteFile,
         Intrinsic::Assert => Routine::Assert,

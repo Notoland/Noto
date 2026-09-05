@@ -34,6 +34,15 @@ pub use analysis::{
 /// collide with it; binding it as an ordinary local is what lets `this` be
 /// looked up, type checked and lowered like any other parameter.
 pub const RECEIVER_NAME: &str = "this";
+
+/// The name a lambda's environment parameter is bound to.
+///
+/// A `$` cannot appear in an identifier, so nothing written in Noto can name
+/// it or collide with it.
+pub const ENVIRONMENT_NAME: &str = "$env";
+
+/// The name a lambda with no declared parameters binds its argument to.
+pub const IMPLICIT_PARAMETER: &str = "it";
 /// The name the incoming value of a `set` accessor is bound to.
 ///
 /// The grammar gives a setter no parameter list, so the value arrives under

@@ -13,6 +13,7 @@ impl Builder<'_> {
             ExprKind::Literal(literal) => self.lower_literal(literal, expr),
             // `this` is the receiver parameter, bound as an ordinary local.
             ExprKind::Path(_) | ExprKind::This => self.lower_path(expr),
+            ExprKind::Lambda(_) => self.lower_lambda(expr),
             ExprKind::ListLiteral(items) => self.lower_list_literal(items, expr),
             ExprKind::Index { target, index } => self.lower_index(target, index, expr),
             ExprKind::Unary { op, operand } => self.lower_unary(*op, operand, expr),
@@ -146,13 +147,7 @@ impl Builder<'_> {
 
     fn lower_path(&mut self, expr: &Expr) -> Operand {
         match self.analysis.resolution(expr.id) {
-            Some(Resolution::Local(local)) => {
-                let Some(slot) = self.slot_of(local) else {
-                    return self.unsupported(expr.span, "this binding");
-                };
-                let ty = self.function().slot(slot).ty;
-                self.emit_value(ty, expr.span, |dest| InstKind::LoadLocal { dest, slot })
-            }
+            Some(Resolution::Local(local)) => self.read_local(local, expr.span),
             Some(Resolution::Const(id)) => {
                 let constant = self.analysis.constant(id);
                 let ty = lower_type(&self.analysis.store, constant.ty);
@@ -727,6 +722,12 @@ impl Builder<'_> {
             return self.lower_construction(class, call, expr);
         }
 
+        // `xs.map { .. }` walks the list in the runtime, calling back into
+        // the closure once per element.
+        if let Some(Resolution::ListMethod(which)) = self.analysis.resolution(call.callee.id) {
+            return self.lower_list_walk(which, call, expr);
+        }
+
         // A case carrying data is constructed by calling it.
         if let Some(Resolution::EnumCase { enum_id, index }) =
             self.analysis.resolution(call.callee.id)
@@ -739,7 +740,17 @@ impl Builder<'_> {
             return self.lower_method_call(method, call, expr);
         }
 
-        let Some(Resolution::Function(function)) = self.analysis.resolution(call.callee.id) else {
+        let Some(Resolution::Function(function)) = self.analysis.resolution(call.callee.id)
+        else {
+            // Nothing names the callee, so it is a value holding a function:
+            // called through the closure it points at, whose first word is
+            // the code and which is itself the environment that code expects.
+            if matches!(
+                self.analysis.store.get(self.analysis.type_of(call.callee.id)),
+                noto_types::Type::Function { .. }
+            ) {
+                return self.lower_indirect_call(call, expr);
+            }
             return self.unsupported(expr.span, "calling this value");
         };
         let Some(callee) = self.func_id_of(function) else {
@@ -1057,6 +1068,156 @@ impl Builder<'_> {
         }
 
         object
+    }
+
+    /// Lowers `f(x)` where `f` holds a function rather than names one.
+    fn lower_indirect_call(&mut self, call: &noto_ast::CallExpr, expr: &Expr) -> Operand {
+        let closure = self.lower_expr(&call.callee);
+        let code = self.emit_value(IrType::Ptr, expr.span, |dest| InstKind::Load {
+            dest,
+            address: closure.clone(),
+            offset: crate::CLOSURE_CODE_OFFSET,
+        });
+
+        let mut arguments = vec![closure];
+        arguments
+            .extend(call.arguments.iter().map(|argument| self.lower_expr(&argument.value)));
+
+        let result = crate::lower_type(&self.analysis.store, self.analysis.type_of(expr.id));
+        if result.is_unit() {
+            self.push(
+                InstKind::CallIndirect { dest: None, target: code, arguments },
+                expr.span,
+            );
+            Operand::Const(Const::Unit)
+        } else {
+            self.emit_value(result, expr.span, |dest| InstKind::CallIndirect {
+                dest: Some(dest),
+                target: code,
+                arguments,
+            })
+        }
+    }
+
+    /// Lowers `xs.map(f)`, `xs.filter(f)` and `xs.each(f)`.
+    fn lower_list_walk(
+        &mut self,
+        which: &str,
+        call: &noto_ast::CallExpr,
+        expr: &Expr,
+    ) -> Operand {
+        let ExprKind::Member { receiver, .. } = &call.callee.kind else {
+            return self.unsupported(expr.span, "this call");
+        };
+        let list = self.lower_expr(receiver);
+        let Some(argument) = call.arguments.first() else {
+            return self.unsupported(expr.span, "this call");
+        };
+        let closure = self.lower_expr(&argument.value);
+
+        let intrinsic = match which {
+            "map" => Intrinsic::ListMap,
+            "filter" => Intrinsic::ListFilter,
+            _ => Intrinsic::ListEach,
+        };
+        if intrinsic == Intrinsic::ListEach {
+            self.push(
+                InstKind::Intrinsic {
+                    dest: None,
+                    which: intrinsic,
+                    arguments: vec![list, closure],
+                },
+                expr.span,
+            );
+            return Operand::Const(Const::Unit);
+        }
+        self.emit_value(IrType::Ptr, expr.span, |dest| InstKind::Intrinsic {
+            dest: Some(dest),
+            which: intrinsic,
+            arguments: vec![list, closure],
+        })
+    }
+
+    /// Lowers a lambda to a closure: its code address, then what it captured.
+    ///
+    /// The captures are copied by value at the moment the lambda is written,
+    /// which is what makes a lambda returned from a function still work after
+    /// that function's frame is gone.
+    fn lower_lambda(&mut self, expr: &Expr) -> Operand {
+        let Some(Resolution::Function(function)) = self.analysis.resolution(expr.id) else {
+            return self.unsupported(expr.span, "this lambda");
+        };
+        let Some(callee) = self.func_id_of(function) else {
+            return self.unsupported(expr.span, "this lambda");
+        };
+
+        let captures = self.analysis.function(function).captures.clone();
+        let span = expr.span;
+        let closure = self.emit_value(IrType::Ptr, span, |dest| InstKind::Alloc {
+            dest,
+            size: crate::closure_size(captures.len()),
+        });
+
+        let address =
+            self.emit_value(IrType::Ptr, span, |dest| InstKind::FuncAddr { dest, function: callee });
+        self.push(
+            InstKind::Store {
+                address: closure.clone(),
+                offset: crate::CLOSURE_CODE_OFFSET,
+                value: address,
+            },
+            span,
+        );
+
+        for (index, local) in captures.into_iter().enumerate() {
+            let value = self.read_local(local, span);
+            self.push(
+                InstKind::Store {
+                    address: closure.clone(),
+                    offset: crate::capture_offset(index as u32),
+                    value,
+                },
+                span,
+            );
+        }
+
+        closure
+    }
+
+    /// Reads a local, whether it lives in this function or was captured.
+    fn read_local(&mut self, local: noto_semantic::LocalId, span: Span) -> Operand {
+        if let Some(slot) = self.slot_of(local) {
+            let ty = self.function().slot(slot).ty;
+            return self.emit_value(ty, span, |dest| InstKind::LoadLocal { dest, slot });
+        }
+
+        // Not ours, so it came in through the environment: parameter zero of
+        // every lambda.
+        let Some(index) = self.capture_index(local) else {
+            return self.unsupported(span, "this binding");
+        };
+        let environment = self.function().parameters[0];
+        let ty = crate::lower_type(&self.analysis.store, self.analysis.local(local).ty);
+        let object = self.emit_value(IrType::Ptr, span, |dest| InstKind::LoadLocal {
+            dest,
+            slot: environment,
+        });
+        self.emit_value(ty, span, |dest| InstKind::Load {
+            dest,
+            address: object,
+            offset: crate::capture_offset(index),
+        })
+    }
+
+    /// Where a captured local sits in the environment of the function being
+    /// lowered.
+    fn capture_index(&self, local: noto_semantic::LocalId) -> Option<u32> {
+        self.analysis
+            .function(self.semantic_function())
+            .captures
+            .iter()
+            .position(|captured| *captured == local)
+            .map(|index| index as u32)
     }
 
     /// Lowers `[a, b, c]` to a header and a buffer holding the elements.

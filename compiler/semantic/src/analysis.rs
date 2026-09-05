@@ -78,6 +78,11 @@ pub enum Resolution {
     },
     /// An operation provided by the compiler.
     Builtin(Builtin),
+    /// A list method taking a function, named by the word that was written.
+    ///
+    /// These cannot be [`Builtin`]s: their types are derived from the list
+    /// and from the function passed to them, not from a fixed signature.
+    ListMethod(&'static str),
     /// A name that could not be resolved; already reported.
     Error,
 }
@@ -116,6 +121,12 @@ pub struct FunctionInfo {
     pub locals: Vec<LocalId>,
     /// The AST node of its body, or `None` for an abstract declaration.
     pub body: Option<NodeId>,
+    /// Whether it came from a lambda, in which case its first parameter is
+    /// the environment its captures live in.
+    pub is_lambda: bool,
+    /// The locals it reads from an enclosing function, in the order they are
+    /// laid out in that environment.
+    pub captures: Vec<LocalId>,
     /// The class this function initialises, when it is a synthesised
     /// `Class.<init>`. Such a function has no body block; lowering builds it
     /// from the field initialisers instead.

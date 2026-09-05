@@ -367,13 +367,18 @@ fn crosses_blocks(function: &noto_ir::Function, value: noto_ir::ValueId) -> bool
 fn operands(kind: &noto_ir::InstKind) -> Vec<noto_ir::Operand> {
     use noto_ir::InstKind::*;
     match kind {
-        Const { .. } | LoadLocal { .. } | Alloc { .. } => Vec::new(),
+        Const { .. } | LoadLocal { .. } | Alloc { .. } | FuncAddr { .. } => Vec::new(),
         StoreLocal { value, .. } => vec![value.clone()],
         Unary { operand, .. } | Cast { operand, .. } => vec![operand.clone()],
         Load { address, .. } => vec![address.clone()],
         Binary { left, right, .. } => vec![left.clone(), right.clone()],
         Store { address, value, .. } => vec![address.clone(), value.clone()],
         Call { arguments, .. } | Intrinsic { arguments, .. } => arguments.clone(),
+        CallIndirect { target, arguments, .. } => {
+            let mut operands = vec![target.clone()];
+            operands.extend(arguments.iter().cloned());
+            operands
+        }
     }
 }
 
@@ -748,4 +753,55 @@ fn a_string_method_with_parameters_passes_them_to_the_runtime() {
     assert!(ir.contains("intrinsic string_slice"), "{ir}");
     assert!(ir.contains("1:i64"), "{ir}");
     assert!(ir.contains("3:i64"), "{ir}");
+}
+
+// --- lambdas -----------------------------------------------------------------
+
+#[test]
+fn a_lambda_becomes_a_closure_holding_its_code_and_its_captures() {
+    let ir = function_ir(
+        "fn main() {\n    val factor = 3\n    val scale = { n: Int -> n * factor }\n    println(scale(1))\n}\n",
+        "main",
+    );
+    assert!(ir.contains("alloc 16"), "the code pointer and one capture: {ir}");
+    assert!(ir.contains("= addr fn"), "{ir}");
+}
+
+#[test]
+fn a_lambda_that_captures_nothing_holds_only_its_code() {
+    let ir = function_ir(
+        "fn apply(f: fn(Int): Int): Int = f(1)\nfn main() { println(apply({ it * 2 })) }\n",
+        "main",
+    );
+    assert!(ir.contains("alloc 8"), "{ir}");
+}
+
+#[test]
+fn calling_a_function_value_goes_through_its_code_pointer() {
+    let ir = function_ir("fn call(f: fn(Int): Int): Int = f(2)\n", "call");
+    assert!(ir.contains("load [%"), "the code is the closure's first word: {ir}");
+    assert!(ir.contains("call %"), "and it is called indirectly: {ir}");
+}
+
+#[test]
+fn a_captured_local_is_read_from_the_environment() {
+    let program = lower_source(
+        "fn main() {\n    val factor = 3\n    val scale = { n: Int -> n * factor }\n    println(scale(1))\n}\n",
+    );
+    let lambda = program
+        .functions
+        .iter()
+        .find(|function| function.name.starts_with("lambda$"))
+        .expect("the lambda is a function")
+        .to_string();
+    assert!(lambda.contains("load [%"), "the capture comes out of the environment: {lambda}");
+}
+
+#[test]
+fn a_list_walk_calls_the_runtime_with_the_list_and_the_closure() {
+    let ir = function_ir(
+        "fn twice(xs: [Int]): [Int] = xs.map({ it * 2 })\n",
+        "twice",
+    );
+    assert!(ir.contains("intrinsic list_map"), "{ir}");
 }

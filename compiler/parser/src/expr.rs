@@ -579,20 +579,28 @@ impl Parser<'_> {
     /// A lambda with no parameter list still takes one argument, bound to the
     /// implicit name `it`.
     fn parse_lambda_params(&mut self) -> Vec<Param> {
-        let Some(arrow) = self.find_lambda_arrow(0) else { return Vec::new() };
+        if self.find_lambda_arrow(0).is_none() {
+            return Vec::new();
+        }
         let mut parameters = Vec::new();
 
-        for _ in 0..arrow {
-            if self.check(&TokenKind::Comma) {
-                self.advance();
+        // One turn of this loop reads one parameter, which may be several
+        // tokens: `n: Int` is three. It stops at the arrow rather than after a
+        // count of tokens.
+        while !self.check(&TokenKind::Arrow) && !self.at_eof() {
+            if self.eat(&TokenKind::Comma) {
                 continue;
             }
+            let before = self.position;
             let start = self.peek_span();
             let name = self.expect_ident();
             let ty = if self.eat(&TokenKind::Colon) { Some(self.parse_type()) } else { None };
             let id = self.next_id();
             let span = start.to(self.previous_span());
             parameters.push(Param { name, ty, default: None, span, id });
+            if self.position == before {
+                self.advance();
+            }
         }
 
         self.expect(&TokenKind::Arrow);

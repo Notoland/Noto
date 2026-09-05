@@ -511,6 +511,28 @@ impl Assembler {
         self.record_jump(label);
     }
 
+    /// `call reg`: calls whatever address the register holds.
+    ///
+    /// This is what a function value is called through — the address is not
+    /// known until it runs.
+    pub fn call_reg(&mut self, target: Reg) {
+        self.rex(false, 0, target.high());
+        self.byte(0xFF);
+        self.modrm_reg(0b010, target.low());
+    }
+
+    /// `lea dst, [rip + label]`: the address of a place in the code.
+    ///
+    /// Unlike [`lea_rip`](Self::lea_rip), which addresses data, this resolves
+    /// against a label in the instruction stream, so it is patched by the same
+    /// pass that patches jumps.
+    pub fn lea_code(&mut self, dst: Reg, label: Label) {
+        self.rex(true, dst.high(), 0);
+        self.byte(0x8D);
+        self.byte((dst.low() << 3) | 0b101);
+        self.record_jump(label);
+    }
+
     fn record_jump(&mut self, label: Label) {
         let at = self.position();
         self.imm32(0);
@@ -545,6 +567,34 @@ mod tests {
         let mut assembler = Assembler::new();
         build(&mut assembler);
         assembler.finish().0
+    }
+
+    #[test]
+    fn encodes_an_indirect_call() {
+        // `call rax` is FF /2, and the register lives in the ModRM r/m field.
+        assert_eq!(encode(|a| a.call_reg(Reg::Rax)), vec![0xFF, 0xD0]);
+        assert_eq!(encode(|a| a.call_reg(Reg::Rcx)), vec![0xFF, 0xD1]);
+        // A high register needs REX.B, and only that.
+        assert_eq!(encode(|a| a.call_reg(Reg::R8)), vec![0x41, 0xFF, 0xD0]);
+    }
+
+    #[test]
+    fn encodes_the_address_of_a_place_in_the_code() {
+        let bytes = encode(|a| {
+            let label = a.label();
+            a.lea_code(Reg::Rax, label);
+            a.bind(label);
+        });
+        // `lea rax, [rip + 0]`: the instruction is seven bytes and the label
+        // is bound right after it, so the displacement is zero.
+        assert_eq!(bytes, vec![0x48, 0x8D, 0x05, 0x00, 0x00, 0x00, 0x00]);
+
+        let backwards = encode(|a| {
+            let label = a.label();
+            a.bind(label);
+            a.lea_code(Reg::Rcx, label);
+        });
+        assert_eq!(backwards, vec![0x48, 0x8D, 0x0D, 0xF9, 0xFF, 0xFF, 0xFF]);
     }
 
     #[test]

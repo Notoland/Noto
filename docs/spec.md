@@ -1,9 +1,9 @@
-# The Noto language specification — 0.9
+# The Noto language specification — 0.10
 
 The language as implemented, section by section. Everything marked **not
 implemented** parses (the parser covers the full grammar) but is rejected
 during semantic analysis or lowering with `NOTO0500 … not implemented in
-Noto 0.9`. Nothing is silently accepted and miscompiled.
+Noto 0.10`. Nothing is silently accepted and miscompiled.
 
 This document describes behaviour; syntax details that deserve their own
 rationale live in [design/](design/).
@@ -245,6 +245,50 @@ than their addresses.
 Everything else — `indexOf`, `contains`, `startsWith`, `split`, `trim`,
 `join`, `repeat` — is written in Noto in `std/string.noto`, on top of those
 three.
+
+## Lambdas
+
+```noto
+val double = { n: Int -> n * 2 }
+println(double(21))
+
+fn apply(f: fn(Int): Int, n: Int): Int = f(n)
+println(apply({ it + 1 }, 41))
+```
+
+A lambda is a value of function type, written `fn(A): B`. Its parameter types
+come from what is expected of it where it is written, which is what lets
+`{ it + 1 }` be passed without a type anywhere; with nothing to infer from,
+they must be written. A lambda with no parameter list takes one argument,
+bound to `it`.
+
+**A lambda captures by value.** What it reads from an enclosing function is
+copied when the lambda is written, which is why a lambda returned from a
+function still works after that function's frame is gone:
+
+```noto
+fn adder(by: Int): fn(Int): Int = { n: Int -> n + by }
+val addTen = adder(10)
+println(addTen(32))     // 42
+```
+
+The other side of that choice: a lambda cannot assign to what it captured.
+The write would change its own copy and leave the original alone, which is
+never what anyone means, so it is an error rather than a surprise.
+
+A lambda compiles to a function taking its environment first, and a closure
+is that environment: its code address followed by what it captured.
+
+Lists take lambdas:
+
+```noto
+xs.map({ it * 2 })              // [T] -> [U], for whatever the lambda gives
+xs.filter({ it % 2 == 0 })      // [T] -> [T]
+xs.each({ n: Int -> println(n) })
+```
+
+Not implemented: lambdas that outlive a captured `var` and see its changes,
+`fold`, `sorted`, and a function value from a declared function's name.
 
 ## Lists
 

@@ -1,4 +1,4 @@
-// Lists in Noto 0.9. Run the tests with `noto test examples/lists.noto`.
+// Lists in Noto 0.10. Run the tests with `noto test examples/lists.noto`.
 //
 // A list is a header — length, capacity, and a pointer to its elements — so
 // `push` can replace the buffer without invalidating anyone's pointer to the
@@ -23,13 +23,13 @@ export fn largest(xs: [Int]): Int {
 }
 
 export fn evens(limit: Int): [Int] {
-    val out: [Int] = []
+    val all: [Int] = []
     var n = 0
     while n < limit {
-        if n % 2 == 0 { out.push(n) }
+        all.push(n)
         n += 1
     }
-    return out
+    return all.filter({ it % 2 == 0 })
 }
 
 export fn joined(parts: [String], separator: String): String {
@@ -103,6 +103,26 @@ test "a literal can be pushed to as well" {
     assert(xs[2] == 3)
 }
 
+test "map produces one element per element" {
+    assert(sum([1, 2, 3].map({ it * 2 })) == 12)
+    assert([1, 2].map({ n: Int -> "n=$n" })[1] == "n=2")
+
+    val factor = 10
+    assert([1, 2].map({ it * factor })[0] == 10)
+}
+
+test "filter keeps what its function accepts" {
+    assert(sum([1, 2, 3, 4].filter({ it % 2 == 0 })) == 6)
+    assert([1, 2, 3].filter({ it > 10 }).length == 0)
+}
+
+test "each visits every element" {
+    val seen: [Int] = []
+    [1, 2, 3].each({ n: Int -> seen.push(n) })
+    assert(seen.length == 3)
+    assert(seen[2] == 3)
+}
+
 test "strings join through a list" {
     assert(joined(["a", "b", "c"], "-") == "a-b-c")
     assert(joined([], ",") == "")
@@ -116,8 +136,9 @@ fn main() {
     println("evens under 20: ${joined_ints(evens(20))}")
 }
 
-fn joined_ints(xs: [Int]): String {
-    val parts: [String] = []
-    for x in xs { parts.push(x.toString()) }
-    return joined(parts, " ")
-}
+// What this used to be, before lambdas:
+//
+//     val parts: [String] = []
+//     for x in xs { parts.push(x.toString()) }
+//     return joined(parts, " ")
+fn joined_ints(xs: [Int]): String = joined(xs.map({ it.toString() }), " ")

@@ -730,8 +730,8 @@ fn every_node_gets_a_distinct_id() {
     struct Collect {
         ids: Vec<noto_ast::NodeId>,
     }
-    impl Visitor for Collect {
-        fn visit_expr(&mut self, expr: &Expr) {
+    impl<'ast> Visitor<'ast> for Collect {
+        fn visit_expr(&mut self, expr: &'ast Expr) {
             self.ids.push(expr.id);
             visit::walk_expr(self, expr);
         }

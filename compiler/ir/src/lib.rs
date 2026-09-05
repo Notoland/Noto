@@ -256,6 +256,12 @@ pub enum Intrinsic {
     StringSlice,
     /// The command line the program was run with.
     Args,
+    /// A list of what a function produced for each element.
+    ListMap,
+    /// The elements a function accepted.
+    ListFilter,
+    /// Calls a function once per element.
+    ListEach,
     /// The contents of a file, or null when it cannot be read.
     ReadFile,
     /// Writes a string to a file, reporting whether every byte arrived.
@@ -288,6 +294,9 @@ impl Intrinsic {
             StringByteAt => "string_byte_at",
             StringSlice => "string_slice",
             Args => "args",
+            ListMap => "list_map",
+            ListFilter => "list_filter",
+            ListEach => "list_each",
             ReadFile => "read_file",
             WriteFile => "write_file",
             Assert => "assert",
@@ -305,7 +314,8 @@ impl Intrinsic {
             IndexCheck | ListPush => IrType::Unit,
             StringByteAt => IrType::I64,
             StringSlice | ReadFile => IrType::Str,
-            Args => IrType::Ptr,
+            Args | ListMap | ListFilter => IrType::Ptr,
+            ListEach => IrType::Unit,
             WriteFile => IrType::Bool,
             _ => IrType::Unit,
         }
@@ -336,7 +346,10 @@ impl Inst {
             | InstKind::Unary { dest, .. }
             | InstKind::Binary { dest, .. }
             | InstKind::Cast { dest, .. } => Some(*dest),
-            InstKind::Alloc { dest, .. } | InstKind::Load { dest, .. } => Some(*dest),
+            InstKind::Alloc { dest, .. }
+            | InstKind::Load { dest, .. }
+            | InstKind::FuncAddr { dest, .. } => Some(*dest),
+            InstKind::CallIndirect { dest, .. } => *dest,
             InstKind::Call { dest, .. } | InstKind::Intrinsic { dest, .. } => *dest,
             InstKind::StoreLocal { .. } | InstKind::Store { .. } => None,
         }
@@ -412,6 +425,25 @@ pub enum InstKind {
         /// Which routine.
         which: Intrinsic,
         /// The arguments.
+        arguments: Vec<Operand>,
+    },
+    /// The address of a function, for calling it indirectly later.
+    FuncAddr {
+        /// Where the address goes.
+        dest: ValueId,
+        /// The function whose address it is.
+        function: FuncId,
+    },
+    /// Calls whatever function an address holds.
+    ///
+    /// This is how a function value is called: the target is not known until
+    /// it runs, so no `FuncId` can name it.
+    CallIndirect {
+        /// Where the result goes, or `None` when it produces `Unit`.
+        dest: Option<ValueId>,
+        /// The address to call.
+        target: Operand,
+        /// The arguments, in parameter order.
         arguments: Vec<Operand>,
     },
     /// Reserves `size` bytes of heap and produces a pointer to them.

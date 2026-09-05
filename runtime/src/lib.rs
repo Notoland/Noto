@@ -139,6 +139,12 @@ pub enum Routine {
     StringConcat,
     /// `string_length(string) -> length`.
     StringLength,
+    /// `list_map(list, closure) -> list`: one element per element.
+    ListMap,
+    /// `list_filter(list, closure) -> list`: the elements it accepts.
+    ListFilter,
+    /// `list_each(list, closure)`: calls it once per element.
+    ListEach,
     /// `args() -> [string]`: the command line, the program's name first.
     Args,
     /// `read_file(path) -> string`, or null when the file cannot be read.
@@ -197,6 +203,9 @@ impl Routine {
             ReadFile,
             WriteFile,
             Args,
+            ListMap,
+            ListFilter,
+            ListEach,
             ListPush,
             IndexCheck,
             Assert,
@@ -227,6 +236,9 @@ impl Routine {
             StringByteAt => "noto_rt_string_byte_at",
             StringSlice => "noto_rt_string_slice",
             Args => "noto_rt_args",
+            ListMap => "noto_rt_list_map",
+            ListFilter => "noto_rt_list_filter",
+            ListEach => "noto_rt_list_each",
             ReadFile => "noto_rt_read_file",
             WriteFile => "noto_rt_write_file",
             IndexCheck => "noto_rt_index_check",
@@ -243,7 +255,8 @@ impl Routine {
             Start | PrintlnEmpty | Newline | Args => 0,
             Exit | Alloc | PrintString | PrintlnString | PrintInt | PrintlnInt | PrintBool
             | PrintlnBool | IntToString | BoolToString | StringLength | Assert | ReadFile => 1,
-            StringConcat | StringEquals | IndexCheck | ListPush | StringByteAt | WriteFile => 2,
+            StringConcat | StringEquals | IndexCheck | ListPush | StringByteAt | WriteFile
+            | ListMap | ListFilter | ListEach => 2,
             StringSlice | Write => 3,
         }
     }

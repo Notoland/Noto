@@ -133,7 +133,10 @@ impl Usage<'_> {
                 let info = self.analysis.enum_at(id);
                 (info.module, info.name.clone())
             }
-            Resolution::Local(_) | Resolution::Builtin(_) | Resolution::Error => return,
+            Resolution::Local(_)
+            | Resolution::Builtin(_)
+            | Resolution::ListMethod(_)
+            | Resolution::Error => return,
         };
         // A method is `Class.method`; what an import binds is the class.
         let name = name.split('.').next().unwrap_or(&name).to_string();
@@ -141,8 +144,8 @@ impl Usage<'_> {
     }
 }
 
-impl Visitor for Usage<'_> {
-    fn visit_expr(&mut self, expr: &Expr) {
+impl<'ast> Visitor<'ast> for Usage<'_> {
+    fn visit_expr(&mut self, expr: &'ast Expr) {
         if let Some(resolution) = self.analysis.resolution(expr.id) {
             self.record(resolution);
         }
@@ -155,7 +158,7 @@ impl Visitor for Usage<'_> {
         visit::walk_expr(self, expr);
     }
 
-    fn visit_type(&mut self, ty: &noto_ast::TypeExpr) {
+    fn visit_type(&mut self, ty: &'ast noto_ast::TypeExpr) {
         // A type mention keeps an import alive: `fn f(p: point.Point)` needs
         // it as surely as a call does.
         if let noto_ast::TypeExprKind::Named { path, .. } = &ty.kind {

@@ -996,6 +996,87 @@ fn the_command_line_is_a_list_of_strings() {
     );
 }
 
+// --- lambdas -----------------------------------------------------------------
+
+#[test]
+fn a_lambda_is_a_value_of_function_type() {
+    check_ok(
+        "fn main() {\n    val double = { n: Int -> n * 2 }\n    println(double(21))\n}\n",
+    );
+}
+
+#[test]
+fn a_lambda_takes_its_parameter_types_from_what_is_expected() {
+    check_ok(
+        "fn apply(f: fn(Int): Int, n: Int): Int = f(n)\n         fn main() {\n    println(apply({ it + 1 }, 41))\n}\n",
+    );
+}
+
+#[test]
+fn a_lambda_with_nothing_to_infer_from_must_say_what_it_takes() {
+    check_error(
+        "fn main() {\n    val f = { it + 1 }\n}\n",
+        "nothing here says what `it` holds",
+    );
+}
+
+#[test]
+fn a_lambda_captures_what_it_reads() {
+    let analysis = check_ok(
+        "fn main() {\n    val factor = 3\n    val scale = { n: Int -> n * factor }\n             println(scale(14))\n}\n",
+    );
+    let lambda = analysis
+        .functions
+        .iter()
+        .find(|function| function.is_lambda)
+        .expect("the lambda is a function");
+    assert_eq!(lambda.captures.len(), 1, "it reads `factor` from outside");
+}
+
+#[test]
+fn a_lambda_may_not_assign_to_what_it_captured() {
+    check_error(
+        "fn main() {\n    var total = 0\n    val add = { n: Int -> total = n }\n}\n",
+        "cannot assign to `total` from inside a lambda",
+    );
+}
+
+#[test]
+fn a_function_value_is_called_with_its_own_types() {
+    check_error(
+        "fn apply(f: fn(Int): Int, n: Int): Int = f(n)\n         fn main() {\n    println(apply({ n: String -> 1 }, 2))\n}\n",
+        "expected",
+    );
+}
+
+#[test]
+fn map_produces_a_list_of_what_its_function_produces() {
+    check_ok(
+        "fn main() {\n    val words = [1, 2].map({ n: Int -> \"n=$n\" })\n             println(words[0])\n}\n",
+    );
+    check_error(
+        "fn main() {\n    val ns: [Int] = [1, 2].map({ n: Int -> \"x\" })\n}\n",
+        "expected `[Int]`",
+    );
+}
+
+#[test]
+fn filter_needs_a_function_producing_a_bool() {
+    check_ok("fn main() {\n    println([1, 2].filter({ it > 1 }).length)\n}\n");
+    check_error(
+        "fn main() {\n    println([1, 2].filter({ it + 1 }).length)\n}\n",
+        "needs a function producing a `Bool`",
+    );
+}
+
+#[test]
+fn a_list_walk_needs_a_function_at_all() {
+    check_error(
+        "fn main() {\n    println([1, 2].map(3).length)\n}\n",
+        "needs a function",
+    );
+}
+
 // --- enums -----------------------------------------------------------------
 
 #[test]

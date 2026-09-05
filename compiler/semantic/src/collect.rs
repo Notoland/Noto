@@ -42,7 +42,7 @@ impl Checker<'_> {
                 codes::UNSUPPORTED_CONSTRUCT,
                 format!("{what} are not supported by this compiler yet"),
             )
-            .with_primary(span, "not implemented in Noto 0.9")
+            .with_primary(span, "not implemented in Noto 0.10")
         };
 
         if let Some(param) = decl.type_params.first() {
@@ -167,7 +167,7 @@ impl Checker<'_> {
                 codes::UNSUPPORTED_CONSTRUCT,
                 format!("{what} are not supported by this compiler yet"),
             )
-            .with_primary(span, "not implemented in Noto 0.9")
+            .with_primary(span, "not implemented in Noto 0.10")
         };
 
         if decl.class_kind != ClassKind::Class {
@@ -176,7 +176,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     format!("`{}` declarations are not supported by this compiler yet", decl.class_kind.as_str()),
                 )
-                .with_primary(item.span, "not implemented in Noto 0.9")
+                .with_primary(item.span, "not implemented in Noto 0.10")
                 .with_note("a value type is copied on assignment, which needs the memory model")
                 .with_help("declare it as a `class` for now: an object is a reference"),
             );
@@ -247,7 +247,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "default values for constructor parameters are not supported by this compiler yet",
                     )
-                    .with_primary(default.span, "not implemented in Noto 0.9"),
+                    .with_primary(default.span, "not implemented in Noto 0.10"),
                 );
             }
 
@@ -560,6 +560,8 @@ impl Checker<'_> {
             result: if is_setter { unit } else { ty },
             locals: Vec::new(),
             body: accessor.body.as_ref().map(|body| body.id),
+            is_lambda: false,
+            captures: Vec::new(),
             init_of: None,
             is_async: false,
             span: accessor.span,
@@ -609,6 +611,8 @@ impl Checker<'_> {
             result: class_ty,
             locals: Vec::new(),
             body: None,
+            is_lambda: false,
+            captures: Vec::new(),
             init_of: Some(class),
             is_async: false,
             span: self.classes[class.0 as usize].span,
@@ -654,7 +658,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "generic methods are not supported by this compiler yet",
                 )
-                .with_primary(function.type_params[0].span, "not implemented in Noto 0.9"),
+                .with_primary(function.type_params[0].span, "not implemented in Noto 0.10"),
             );
             return;
         }
@@ -701,6 +705,8 @@ impl Checker<'_> {
             result,
             locals: Vec::new(),
             body: function.body.as_ref().map(|body| body.id),
+            is_lambda: false,
+            captures: Vec::new(),
             init_of: None,
             is_async: function.is_async,
             span: item.span,
@@ -753,7 +759,7 @@ impl Checker<'_> {
                             codes::UNSUPPORTED_CONSTRUCT,
                             "default values for case data are not supported by this compiler yet",
                         )
-                        .with_primary(default.span, "not implemented in Noto 0.9"),
+                        .with_primary(default.span, "not implemented in Noto 0.10"),
                     );
                 }
                 let ty = match &field.ty {
@@ -804,7 +810,7 @@ impl Checker<'_> {
                 codes::UNSUPPORTED_CONSTRUCT,
                 format!("`{name}` declarations are not supported by this compiler yet"),
             )
-            .with_primary(item.span, "not implemented in Noto 0.9")
+            .with_primary(item.span, "not implemented in Noto 0.10")
             .with_note(
                 "the syntax is accepted so that tooling can read the whole language; \
                  code generation for it lands in a later release",
@@ -819,7 +825,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "extension functions are not supported by this compiler yet",
                 )
-                .with_primary(receiver.span, "not implemented in Noto 0.9"),
+                .with_primary(receiver.span, "not implemented in Noto 0.10"),
             );
             return;
         }
@@ -829,7 +835,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "generic functions are not supported by this compiler yet",
                 )
-                .with_primary(function.type_params[0].span, "not implemented in Noto 0.9"),
+                .with_primary(function.type_params[0].span, "not implemented in Noto 0.10"),
             );
             return;
         }
@@ -863,6 +869,8 @@ impl Checker<'_> {
             result,
             locals: Vec::new(),
             body: function.body.as_ref().map(|body| body.id),
+            is_lambda: false,
+            captures: Vec::new(),
             init_of: None,
             is_async: function.is_async,
             span: item.span,
@@ -933,7 +941,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "`main` cannot be `async` in this compiler yet",
                 )
-                .with_primary(span, "not implemented in Noto 0.9"),
+                .with_primary(span, "not implemented in Noto 0.10"),
             );
         }
     }
@@ -999,6 +1007,8 @@ impl Checker<'_> {
             result: unit,
             locals: Vec::new(),
             body: Some(test.body.id),
+            is_lambda: false,
+            captures: Vec::new(),
             init_of: None,
             is_async: false,
             span: test.name_span,
@@ -1163,7 +1173,7 @@ impl Checker<'_> {
                             codes::UNSUPPORTED_CONSTRUCT,
                             "generic types are not supported by this compiler yet",
                         )
-                        .with_primary(ty.span, "not implemented in Noto 0.9"),
+                        .with_primary(ty.span, "not implemented in Noto 0.10"),
                     );
                     return self.store.error();
                 }
