@@ -5,7 +5,7 @@ human or agent. Read this before touching anything.
 
 **Where the project stands:** the compiler is real and works end to end. A
 `.noto` file becomes a static native ELF executable with no LLVM, no libc, and
-no external toolchain. 494 tests pass, 0 fail, no warnings. The whole tool
+no external toolchain. 497 tests pass, 0 fail, no warnings. The whole tool
 set — `run`, `build`, `check`, `test`, `lint`, `fmt` — is implemented, and
 `class` gives the language its first object type.
 
@@ -110,6 +110,9 @@ fn main() {
   `noto test`
 - `import`/`export`: a program is many files, one module each, resolved from
   the root file's directory
+- `readFile`, `writeFile` and `args()`: raw Linux syscalls, no libc. A path
+  is copied into a NUL-terminated buffer by a private runtime helper, and
+  `_start` saves the entry stack pointer so `args` can find `argc`/`argv`
 - strings: `.length`, `.byteAt`, `.substring` are compiler builtins measured
   in **bytes**; `std/string.noto` builds `indexOf`, `split`, `trim`, `join`
   and the rest on top of them, in Noto
@@ -153,7 +156,7 @@ Runtime limitations, documented and deliberate:
 - **the allocator never frees.** Bump pointer over `mmap` regions. See
   `compiler/codegen/src/x86_64/runtime.rs`. This is a placeholder for the real
   memory model.
-- no threads, no async runtime, no FFI.
+- no threads, no async runtime, no FFI, no networking, no standard input.
 
 ## 5. What remains, in the order it should be done
 
@@ -299,7 +302,7 @@ RFC.
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
-cargo test --workspace          # 494 tests, must stay at 0 failures
+cargo test --workspace          # 497 tests, must stay at 0 failures
 cargo build --workspace
 cargo run -q -p noto-driver --example emit -- examples/hello.noto /tmp/hello && /tmp/hello
 ```

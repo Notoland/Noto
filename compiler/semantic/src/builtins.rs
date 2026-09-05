@@ -46,6 +46,12 @@ pub enum Builtin {
     ListPush,
     /// `assert(condition: Bool)`
     Assert,
+    /// `args(): [String]`
+    Args,
+    /// `readFile(path: String): String?`
+    ReadFile,
+    /// `writeFile(path: String, contents: String): Bool`
+    WriteFile,
 }
 
 impl Builtin {
@@ -61,6 +67,9 @@ impl Builtin {
             StringSubstring => "substring",
             ListPush => "push",
             Assert => "assert",
+            Args => "args",
+            ReadFile => "readFile",
+            WriteFile => "writeFile",
         }
     }
 
@@ -71,6 +80,9 @@ impl Builtin {
             PrintString | PrintlnString => vec![store.string()],
             PrintInt | PrintlnInt => vec![store.int()],
             PrintBool | PrintlnBool | Assert => vec![store.bool()],
+            Args => Vec::new(),
+            ReadFile => vec![store.string()],
+            WriteFile => vec![store.string(), store.string()],
             StringByteAt => vec![store.int()],
             StringSubstring => vec![store.int(), store.int()],
             PrintlnEmpty | IntToString | BoolToString | StringToString | StringLength
@@ -79,12 +91,24 @@ impl Builtin {
     }
 
     /// The type this builtin produces.
-    pub fn result(self, store: &TypeStore) -> TypeId {
+    ///
+    /// `readFile` produces `String?`: a file that cannot be read is an
+    /// ordinary outcome, and the language already has a way to say so.
+    pub fn result(self, store: &mut TypeStore) -> TypeId {
         use Builtin::*;
         match self {
             IntToString | BoolToString | StringToString => store.string(),
             StringLength | ListLength | StringByteAt => store.int(),
             StringSubstring => store.string(),
+            WriteFile => store.bool(),
+            Args => {
+                let string = store.string();
+                store.intern(noto_types::Type::List(string))
+            }
+            ReadFile => {
+                let string = store.string();
+                store.nullable(string)
+            }
             _ => store.unit(),
         }
     }
@@ -121,6 +145,9 @@ pub const FREE_FUNCTIONS: &[Builtin] = &[
     Builtin::PrintlnBool,
     Builtin::PrintlnEmpty,
     Builtin::Assert,
+    Builtin::ReadFile,
+    Builtin::WriteFile,
+    Builtin::Args,
 ];
 
 /// The overloads of a free function with the given name.

@@ -139,6 +139,12 @@ pub enum Routine {
     StringConcat,
     /// `string_length(string) -> length`.
     StringLength,
+    /// `args() -> [string]`: the command line, the program's name first.
+    Args,
+    /// `read_file(path) -> string`, or null when the file cannot be read.
+    ReadFile,
+    /// `write_file(path, contents) -> bool`. True when every byte was written.
+    WriteFile,
     /// `string_byte_at(string, index) -> byte`. The index is checked.
     StringByteAt,
     /// `string_slice(string, start, end) -> string`. Both bounds are checked.
@@ -188,6 +194,9 @@ impl Routine {
             StringEquals,
             StringByteAt,
             StringSlice,
+            ReadFile,
+            WriteFile,
+            Args,
             ListPush,
             IndexCheck,
             Assert,
@@ -217,6 +226,9 @@ impl Routine {
             StringEquals => "noto_rt_string_equals",
             StringByteAt => "noto_rt_string_byte_at",
             StringSlice => "noto_rt_string_slice",
+            Args => "noto_rt_args",
+            ReadFile => "noto_rt_read_file",
+            WriteFile => "noto_rt_write_file",
             IndexCheck => "noto_rt_index_check",
             ListPush => "noto_rt_list_push",
             Assert => "noto_rt_assert",
@@ -228,10 +240,10 @@ impl Routine {
     pub fn arity(self) -> usize {
         use Routine::*;
         match self {
-            Start | PrintlnEmpty | Newline => 0,
+            Start | PrintlnEmpty | Newline | Args => 0,
             Exit | Alloc | PrintString | PrintlnString | PrintInt | PrintlnInt | PrintBool
-            | PrintlnBool | IntToString | BoolToString | StringLength | Assert => 1,
-            StringConcat | StringEquals | IndexCheck | ListPush | StringByteAt => 2,
+            | PrintlnBool | IntToString | BoolToString | StringLength | Assert | ReadFile => 1,
+            StringConcat | StringEquals | IndexCheck | ListPush | StringByteAt | WriteFile => 2,
             StringSlice | Write => 3,
         }
     }

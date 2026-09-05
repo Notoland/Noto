@@ -273,7 +273,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "declarations inside a function body are not supported yet",
                     )
-                    .with_primary(stmt.span, "not implemented in Noto 0.8")
+                    .with_primary(stmt.span, "not implemented in Noto 0.9")
                     .with_help("move the declaration to the top level of the file"),
                 );
                 self.store.unit()
@@ -357,7 +357,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this pattern is not supported in a binding yet",
                     )
-                    .with_primary(pattern.span, "not implemented in Noto 0.8")
+                    .with_primary(pattern.span, "not implemented in Noto 0.9")
                     .with_help("bind a name, a tuple of names, or `_`"),
                 );
             }
@@ -384,7 +384,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         format!("cannot iterate over a `{rendered}` yet"),
                     )
-                    .with_primary(iterable.span, "not iterable in Noto 0.8")
+                    .with_primary(iterable.span, "not iterable in Noto 0.9")
                     .with_help("iterate over a range, as in `for i in 0..10`"),
                 );
                 self.store.error()
@@ -455,7 +455,7 @@ impl Checker<'_> {
                     let ty = self.check_expr_expecting(bound, int);
                     self.expect_assignable(ty, int, bound.span, None);
                 }
-                // Ranges exist only inside `for` and `when` in Noto 0.8; there
+                // Ranges exist only inside `for` and `when` in Noto 0.9; there
                 // is no first-class `Range` type to give them yet.
                 self.store.unit()
             }
@@ -475,7 +475,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this expression is not supported by this compiler yet",
                     )
-                    .with_primary(expr.span, "not implemented in Noto 0.8"),
+                    .with_primary(expr.span, "not implemented in Noto 0.9"),
                 );
                 self.store.error()
             }
@@ -908,7 +908,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "`in` is not supported outside a `when` arm yet",
                     )
-                    .with_primary(span, "not implemented in Noto 0.8"),
+                    .with_primary(span, "not implemented in Noto 0.9"),
                 );
                 bool_ty
             }
@@ -1338,7 +1338,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this pattern is not supported by this compiler yet",
                     )
-                    .with_primary(pattern.span, "not implemented in Noto 0.8"),
+                    .with_primary(pattern.span, "not implemented in Noto 0.9"),
                 );
             }
         }
@@ -1498,7 +1498,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "explicit type arguments are not supported by this compiler yet",
                 )
-                .with_primary(expr.span, "not implemented in Noto 0.8"),
+                .with_primary(expr.span, "not implemented in Noto 0.9"),
             );
         }
 
@@ -1509,7 +1509,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "named arguments are not supported by this compiler yet",
                     )
-                    .with_primary(name.span, "not implemented in Noto 0.8")
+                    .with_primary(name.span, "not implemented in Noto 0.9")
                     .with_help("pass the arguments positionally"),
                 );
             }
@@ -1577,7 +1577,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "safe calls are not supported by this compiler yet",
                     )
-                    .with_primary(expr.span, "not implemented in Noto 0.8"),
+                    .with_primary(expr.span, "not implemented in Noto 0.9"),
                 );
                 return self.store.error();
             }
@@ -1629,7 +1629,7 @@ impl Checker<'_> {
                     for argument in call.arguments.iter().skip(expected.len()) {
                         self.check_expr(&argument.value);
                     }
-                    let result = builtin.result(&self.store);
+                    let result = builtin.result(&mut self.store);
                     self.record_type(call.callee.id, result);
                     return result;
                 }
@@ -2115,7 +2115,7 @@ impl Checker<'_> {
         match matching {
             Some(builtin) => {
                 self.record_resolution(call.callee.id, Resolution::Builtin(*builtin));
-                let result = builtin.result(&self.store);
+                let result = builtin.result(&mut self.store);
                 self.record_type(call.callee.id, result);
                 result
             }
@@ -2203,7 +2203,7 @@ impl Checker<'_> {
                                 codes::UNSUPPORTED_CONSTRUCT,
                                 "safe property access is not supported by this compiler yet",
                             )
-                            .with_primary(expr.span, "not implemented in Noto 0.8"),
+                            .with_primary(expr.span, "not implemented in Noto 0.9"),
                         );
                         return self.store.error();
                     }
@@ -2238,7 +2238,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "safe field access is not supported by this compiler yet",
                     )
-                    .with_primary(expr.span, "not implemented in Noto 0.8"),
+                    .with_primary(expr.span, "not implemented in Noto 0.9"),
                 );
                 return self.store.error();
             }
@@ -2251,7 +2251,7 @@ impl Checker<'_> {
         match builtins::member(&self.store, base, &name.name) {
             Some(builtin) if builtin.is_property() => {
                 self.record_resolution(expr.id, Resolution::Builtin(builtin));
-                let result = builtin.result(&self.store);
+                let result = builtin.result(&mut self.store);
                 if safe {
                     self.store.nullable(result)
                 } else {

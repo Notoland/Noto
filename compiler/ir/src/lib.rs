@@ -254,6 +254,12 @@ pub enum Intrinsic {
     StringByteAt,
     /// A new string holding the bytes between two offsets.
     StringSlice,
+    /// The command line the program was run with.
+    Args,
+    /// The contents of a file, or null when it cannot be read.
+    ReadFile,
+    /// Writes a string to a file, reporting whether every byte arrived.
+    WriteFile,
     /// Aborts the program unless the argument is `true`.
     Assert,
     /// Ends the process with the given exit status.
@@ -281,6 +287,9 @@ impl Intrinsic {
             ListPush => "list_push",
             StringByteAt => "string_byte_at",
             StringSlice => "string_slice",
+            Args => "args",
+            ReadFile => "read_file",
+            WriteFile => "write_file",
             Assert => "assert",
             Exit => "exit",
         }
@@ -295,7 +304,9 @@ impl Intrinsic {
             StringEquals => IrType::Bool,
             IndexCheck | ListPush => IrType::Unit,
             StringByteAt => IrType::I64,
-            StringSlice => IrType::Str,
+            StringSlice | ReadFile => IrType::Str,
+            Args => IrType::Ptr,
+            WriteFile => IrType::Bool,
             _ => IrType::Unit,
         }
     }

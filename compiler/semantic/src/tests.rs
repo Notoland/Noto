@@ -965,6 +965,37 @@ fn byte_at_produces_an_integer_and_substring_a_string() {
     );
 }
 
+#[test]
+fn a_file_read_may_fail_so_it_produces_a_nullable_string() {
+    check_ok(
+        "fn main() {\n    val text = readFile(\"a.txt\") ?: \"\"\n    println(text.length)\n}\n",
+    );
+    check_error(
+        "fn main() {\n    val text: String = readFile(\"a.txt\")\n}\n",
+        "expected `String`",
+    );
+}
+
+#[test]
+fn writing_a_file_reports_whether_it_worked() {
+    check_ok("fn main() {\n    println(writeFile(\"a.txt\", \"hi\"))\n}\n");
+    check_error(
+        "fn main() {\n    writeFile(\"a.txt\")\n}\n",
+        "no version of `writeFile` accepts (String)",
+    );
+}
+
+#[test]
+fn the_command_line_is_a_list_of_strings() {
+    check_ok(
+        "fn main() {\n    for a in args() { println(a) }\n    println(args().length)\n}\n",
+    );
+    check_error(
+        "fn main() {\n    val n: Int = args()\n}\n",
+        "expected `Int`",
+    );
+}
+
 // --- enums -----------------------------------------------------------------
 
 #[test]

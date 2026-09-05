@@ -1,9 +1,9 @@
-# The Noto language specification — 0.8
+# The Noto language specification — 0.9
 
 The language as implemented, section by section. Everything marked **not
 implemented** parses (the parser covers the full grammar) but is rejected
 during semantic analysis or lowering with `NOTO0500 … not implemented in
-Noto 0.8`. Nothing is silently accepted and miscompiled.
+Noto 0.9`. Nothing is silently accepted and miscompiled.
 
 This document describes behaviour; syntax details that deserve their own
 rationale live in [design/](design/).
@@ -204,6 +204,25 @@ case's values — every case of it, including one carrying nothing.
 
 Not implemented: explicit case values (`Red = 1`), methods on an enum,
 generic enums, interfaces on an enum.
+
+## Talking to the world
+
+Three builtins reach outside the process:
+
+```noto
+val text = readFile("config.txt") ?: ""    // String?, null when it fails
+val ok = writeFile("out.txt", text)        // Bool, true when every byte landed
+for argument in args() { println(argument) }
+```
+
+`readFile` produces a `String?` because a file that cannot be read is an
+ordinary outcome, and the language already has a way to say so. `writeFile`
+reports true only when every byte reached the file: a short write left
+unretried is a truncated file, and calling that success would be worse than
+calling it failure. `args()` gives the command line with the program's own
+name first, the way a C `main` receives it.
+
+There is no networking yet, and no standard input.
 
 ## Strings
 

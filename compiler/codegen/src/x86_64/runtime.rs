@@ -8,7 +8,7 @@
 //!
 //! # The allocator
 //!
-//! Noto 0.8 allocates from a bump pointer over regions obtained with `mmap`
+//! Noto 0.9 allocates from a bump pointer over regions obtained with `mmap`
 //! and never frees. That is enough to run programs that build strings, and it
 //! is deliberately the simplest thing that is correct while the memory model
 //! is being designed; see `docs/rfcs/0002-memory-model.md`.
@@ -17,7 +17,7 @@ use super::encode::{Assembler, Cond, Label, Reg, Reference};
 use noto_runtime::{
     Routine, ASSERT_FAILURE_MESSAGE, ASSERT_FAILURE_STATUS, FALSE_TEXT, HEAP_CHUNK_SIZE,
     INDEX_FAILURE_MESSAGE, INDEX_FAILURE_STATUS, LIST_CAPACITY_OFFSET, LIST_DATA_OFFSET,
-    LIST_INITIAL_CAPACITY, LIST_LENGTH_OFFSET, OUT_OF_MEMORY_MESSAGE, OUT_OF_MEMORY_STATUS,
+    LIST_HEADER_SIZE, LIST_INITIAL_CAPACITY, LIST_LENGTH_OFFSET, OUT_OF_MEMORY_MESSAGE, OUT_OF_MEMORY_STATUS,
     STRING_DATA_OFFSET, STRING_LENGTH_OFFSET, TRUE_TEXT,
 };
 use std::collections::HashMap;
@@ -30,7 +30,27 @@ mod syscall {
     pub const EXIT: i64 = 60;
     /// `mmap(addr, length, prot, flags, fd, offset)`
     pub const MMAP: i64 = 9;
+    /// `read(fd, buffer, count)`
+    pub const READ: i64 = 0;
+    /// `open(path, flags, mode)`
+    pub const OPEN: i64 = 2;
+    /// `close(fd)`
+    pub const CLOSE: i64 = 3;
+    /// `lseek(fd, offset, whence)`
+    pub const LSEEK: i64 = 8;
 }
+
+/// `O_WRONLY | O_CREAT | O_TRUNC`, what writing a whole file wants.
+const O_WRITE_CREATE_TRUNCATE: i64 = 0x241;
+
+/// `rw-r--r--`, the mode a new file is created with.
+const NEW_FILE_MODE: i64 = 0o644;
+
+/// `SEEK_END`, for measuring a file by seeking to its end.
+const SEEK_END: i64 = 2;
+
+/// `SEEK_SET`, for returning to the start of it.
+const SEEK_SET: i64 = 0;
 
 /// `PROT_READ | PROT_WRITE`
 const PROT_READ_WRITE: i64 = 0x3;
@@ -48,8 +68,11 @@ pub mod globals {
     pub const HEAP_NEXT: u32 = 0;
     /// Offset of the limit: one past the last byte of the current region.
     pub const HEAP_END: u32 = 8;
+    /// Offset of the stack pointer as the process was entered with it, which
+    /// is where `argc` and `argv` are.
+    pub const ENTRY_STACK: u32 = 16;
     /// Total size of the runtime's writable state.
-    pub const SIZE: u64 = 16;
+    pub const SIZE: u64 = 24;
 }
 
 /// Constants the runtime itself needs in read-only memory.
@@ -122,6 +145,11 @@ pub fn append_data(rodata: &mut Vec<u8>) -> RuntimeData {
 /// The labels of every runtime routine, so generated code can call them.
 pub struct RuntimeLabels {
     labels: HashMap<Routine, Label>,
+    /// A helper the file routines share, which is not a [`Routine`]: nothing
+    /// outside this module calls it and nothing in Noto can name it.
+    c_path: Label,
+    /// The other file helper, building a Noto string from a terminated one.
+    from_c_string: Label,
 }
 
 impl RuntimeLabels {
@@ -131,7 +159,11 @@ impl RuntimeLabels {
         for routine in Routine::all() {
             labels.insert(*routine, assembler.label());
         }
-        RuntimeLabels { labels }
+        RuntimeLabels {
+            labels,
+            c_path: assembler.label(),
+            from_c_string: assembler.label(),
+        }
     }
 
     /// The label of a routine.
@@ -168,6 +200,11 @@ pub fn emit(
     emit_string_concat(assembler, labels);
     emit_string_length(assembler, labels);
     emit_string_equals(assembler, labels);
+    emit_from_c_string(assembler, labels);
+    emit_args(assembler, labels);
+    emit_c_path(assembler, labels);
+    emit_read_file(assembler, labels);
+    emit_write_file(assembler, labels);
     emit_string_byte_at(assembler, labels);
     emit_string_slice(assembler, labels);
     emit_list_push(assembler, labels);
@@ -209,6 +246,12 @@ fn emit_start(
     main_returns_status: bool,
 ) {
     begin(assembler, labels, Routine::Start);
+
+    // `argc` sits at the stack pointer the kernel entered with, and `argv`
+    // right after it. Nothing has pushed yet, so this is the only moment that
+    // address is known; `args` reads it back later.
+    assembler.lea_rip(Reg::Rax, Reference::Data(globals::ENTRY_STACK));
+    assembler.mov_mem_reg(Reg::Rax, 0, Reg::Rsp);
 
     // The stack is 16-byte aligned at entry but the ABI assumes a call has
     // pushed a return address, so one word is dropped to match.
@@ -710,6 +753,355 @@ fn times_eight(assembler: &mut Assembler, reg: Reg) {
     assembler.add(reg, reg);
     assembler.add(reg, reg);
     assembler.add(reg, reg);
+}
+
+/// Builds a Noto string from a NUL-terminated one.
+///
+/// The reverse of [`emit_c_path`]: what the kernel hands a process is
+/// terminated, and what Noto passes around carries its length.
+fn emit_from_c_string(assembler: &mut Assembler, labels: &RuntimeLabels) {
+    assembler.bind(labels.from_c_string);
+    prologue(assembler, 3);
+
+    let source = -8;
+    let length = -16;
+    let result = -24;
+    assembler.mov_mem_reg(Reg::Rbp, source, Reg::Rdi);
+
+    // Measure it.
+    let scan = assembler.label();
+    let measured = assembler.label();
+    assembler.mov_reg_imm64(Reg::Rcx, 0);
+    assembler.bind(scan);
+    assembler.mov_reg_mem(Reg::Rsi, Reg::Rbp, source);
+    assembler.add(Reg::Rsi, Reg::Rcx);
+    assembler.movzx_reg_mem8(Reg::Rax, Reg::Rsi, 0);
+    assembler.cmp_imm(Reg::Rax, 0);
+    assembler.jcc(Cond::Eq, measured);
+    assembler.add_imm(Reg::Rcx, 1);
+    assembler.jmp(scan);
+    assembler.bind(measured);
+    assembler.mov_mem_reg(Reg::Rbp, length, Reg::Rcx);
+
+    assembler.mov_reg_reg(Reg::Rdi, Reg::Rcx);
+    assembler.add_imm(Reg::Rdi, STRING_DATA_OFFSET);
+    assembler.call(labels.get(Routine::Alloc));
+    assembler.mov_mem_reg(Reg::Rbp, result, Reg::Rax);
+    assembler.mov_reg_mem(Reg::Rcx, Reg::Rbp, length);
+    assembler.mov_mem_reg(Reg::Rax, STRING_LENGTH_OFFSET, Reg::Rcx);
+
+    assembler.mov_reg_mem(Reg::Rsi, Reg::Rbp, source);
+    assembler.mov_reg_reg(Reg::Rdi, Reg::Rax);
+    assembler.add_imm(Reg::Rdi, STRING_DATA_OFFSET);
+
+    let copy = assembler.label();
+    let done = assembler.label();
+    assembler.bind(copy);
+    assembler.cmp_imm(Reg::Rcx, 0);
+    assembler.jcc(Cond::Eq, done);
+    assembler.movzx_reg_mem8(Reg::Rax, Reg::Rsi, 0);
+    assembler.mov_mem_reg8(Reg::Rdi, 0, Reg::Rax);
+    assembler.add_imm(Reg::Rsi, 1);
+    assembler.add_imm(Reg::Rdi, 1);
+    assembler.sub_imm(Reg::Rcx, 1);
+    assembler.jmp(copy);
+    assembler.bind(done);
+
+    assembler.mov_reg_mem(Reg::Rax, Reg::Rbp, result);
+    epilogue(assembler);
+}
+
+/// `args() -> [String]`: the command line, the program's own name first.
+fn emit_args(assembler: &mut Assembler, labels: &RuntimeLabels) {
+    begin(assembler, labels, Routine::Args);
+    prologue(assembler, 6);
+
+    let count = -8;
+    let vector = -16;
+    let buffer = -24;
+    let list = -32;
+    let index = -40;
+
+    assembler.lea_rip(Reg::Rax, Reference::Data(globals::ENTRY_STACK));
+    assembler.mov_reg_mem(Reg::Rax, Reg::Rax, 0);
+    assembler.mov_reg_mem(Reg::Rcx, Reg::Rax, 0);
+    assembler.mov_mem_reg(Reg::Rbp, count, Reg::Rcx);
+    assembler.add_imm(Reg::Rax, 8);
+    assembler.mov_mem_reg(Reg::Rbp, vector, Reg::Rax);
+
+    // The buffer is never empty, so a list of no arguments can still be
+    // pushed to.
+    assembler.mov_reg_reg(Reg::Rdi, Reg::Rcx);
+    let sized = assembler.label();
+    assembler.cmp_imm(Reg::Rdi, 0);
+    assembler.jcc(Cond::Ne, sized);
+    assembler.mov_reg_imm64(Reg::Rdi, 1);
+    assembler.bind(sized);
+    times_eight(assembler, Reg::Rdi);
+    assembler.call(labels.get(Routine::Alloc));
+    assembler.mov_mem_reg(Reg::Rbp, buffer, Reg::Rax);
+
+    assembler.mov_reg_imm64(Reg::Rdi, LIST_HEADER_SIZE as i64);
+    assembler.call(labels.get(Routine::Alloc));
+    assembler.mov_mem_reg(Reg::Rbp, list, Reg::Rax);
+    assembler.mov_reg_mem(Reg::Rcx, Reg::Rbp, count);
+    assembler.mov_mem_reg(Reg::Rax, LIST_LENGTH_OFFSET, Reg::Rcx);
+    let capacity = assembler.label();
+    assembler.cmp_imm(Reg::Rcx, 0);
+    assembler.jcc(Cond::Ne, capacity);
+    assembler.mov_reg_imm64(Reg::Rcx, 1);
+    assembler.bind(capacity);
+    assembler.mov_mem_reg(Reg::Rax, LIST_CAPACITY_OFFSET, Reg::Rcx);
+    assembler.mov_reg_mem(Reg::Rdx, Reg::Rbp, buffer);
+    assembler.mov_mem_reg(Reg::Rax, LIST_DATA_OFFSET, Reg::Rdx);
+
+    assembler.mov_reg_imm64(Reg::Rax, 0);
+    assembler.mov_mem_reg(Reg::Rbp, index, Reg::Rax);
+
+    let each = assembler.label();
+    let finished = assembler.label();
+    assembler.bind(each);
+    assembler.mov_reg_mem(Reg::Rax, Reg::Rbp, index);
+    assembler.mov_reg_mem(Reg::Rcx, Reg::Rbp, count);
+    assembler.cmp(Reg::Rax, Reg::Rcx);
+    assembler.jcc(Cond::Ge, finished);
+
+    assembler.mov_reg_reg(Reg::Rdx, Reg::Rax);
+    times_eight(assembler, Reg::Rdx);
+    assembler.mov_reg_mem(Reg::Rsi, Reg::Rbp, vector);
+    assembler.add(Reg::Rsi, Reg::Rdx);
+    assembler.mov_reg_mem(Reg::Rdi, Reg::Rsi, 0);
+    assembler.call(labels.from_c_string);
+
+    assembler.mov_reg_mem(Reg::Rcx, Reg::Rbp, index);
+    assembler.mov_reg_reg(Reg::Rdx, Reg::Rcx);
+    times_eight(assembler, Reg::Rdx);
+    assembler.mov_reg_mem(Reg::Rsi, Reg::Rbp, buffer);
+    assembler.add(Reg::Rsi, Reg::Rdx);
+    assembler.mov_mem_reg(Reg::Rsi, 0, Reg::Rax);
+
+    assembler.add_imm(Reg::Rcx, 1);
+    assembler.mov_mem_reg(Reg::Rbp, index, Reg::Rcx);
+    assembler.jmp(each);
+    assembler.bind(finished);
+
+    assembler.mov_reg_mem(Reg::Rax, Reg::Rbp, list);
+    epilogue(assembler);
+}
+
+/// Copies a string's bytes into a NUL-terminated buffer and returns it.
+///
+/// Linux takes a path as a NUL-terminated C string; a Noto `String` carries
+/// its length instead and is not terminated. This is the one place the two
+/// representations meet, so every file routine goes through it.
+///
+/// Not a [`Routine`]: nothing outside this module may call it, and nothing
+/// in Noto can name it.
+fn emit_c_path(assembler: &mut Assembler, labels: &RuntimeLabels) {
+    assembler.bind(labels.c_path);
+    prologue(assembler, 2);
+
+    let path = -8;
+    let buffer = -16;
+    assembler.mov_mem_reg(Reg::Rbp, path, Reg::Rdi);
+
+    assembler.mov_reg_mem(Reg::Rdi, Reg::Rdi, STRING_LENGTH_OFFSET);
+    assembler.add_imm(Reg::Rdi, 1);
+    assembler.call(labels.get(Routine::Alloc));
+    assembler.mov_mem_reg(Reg::Rbp, buffer, Reg::Rax);
+
+    assembler.mov_reg_mem(Reg::Rsi, Reg::Rbp, path);
+    assembler.mov_reg_mem(Reg::Rcx, Reg::Rsi, STRING_LENGTH_OFFSET);
+    assembler.add_imm(Reg::Rsi, STRING_DATA_OFFSET);
+    assembler.mov_reg_reg(Reg::Rdi, Reg::Rax);
+
+    let copy = assembler.label();
+    let done = assembler.label();
+    assembler.bind(copy);
+    assembler.cmp_imm(Reg::Rcx, 0);
+    assembler.jcc(Cond::Eq, done);
+    assembler.movzx_reg_mem8(Reg::Rax, Reg::Rsi, 0);
+    assembler.mov_mem_reg8(Reg::Rdi, 0, Reg::Rax);
+    assembler.add_imm(Reg::Rsi, 1);
+    assembler.add_imm(Reg::Rdi, 1);
+    assembler.sub_imm(Reg::Rcx, 1);
+    assembler.jmp(copy);
+    assembler.bind(done);
+
+    assembler.mov_reg_imm64(Reg::Rax, 0);
+    assembler.mov_mem_reg8(Reg::Rdi, 0, Reg::Rax);
+
+    assembler.mov_reg_mem(Reg::Rax, Reg::Rbp, buffer);
+    epilogue(assembler);
+}
+
+/// `read_file(path) -> string`, or null when the file cannot be read.
+///
+/// The size comes from seeking to the end rather than from `fstat`, which
+/// would mean depending on the layout of a kernel struct. A file that cannot
+/// be opened, measured or read gives null; deciding what to do about that is
+/// the program's business, and `String?` is how the language says so.
+fn emit_read_file(assembler: &mut Assembler, labels: &RuntimeLabels) {
+    begin(assembler, labels, Routine::ReadFile);
+    prologue(assembler, 4);
+
+    let fd = -8;
+    let size = -16;
+    let result = -24;
+
+    let failed = assembler.label();
+    let close_and_fail = assembler.label();
+
+    assembler.call(labels.c_path);
+
+    // open(path, O_RDONLY, 0)
+    assembler.mov_reg_reg(Reg::Rdi, Reg::Rax);
+    assembler.mov_reg_imm64(Reg::Rsi, 0);
+    assembler.mov_reg_imm64(Reg::Rdx, 0);
+    assembler.mov_reg_imm64(Reg::Rax, syscall::OPEN);
+    assembler.syscall();
+    assembler.cmp_imm(Reg::Rax, 0);
+    assembler.jcc(Cond::Lt, failed);
+    assembler.mov_mem_reg(Reg::Rbp, fd, Reg::Rax);
+
+    // lseek(fd, 0, SEEK_END) measures it.
+    assembler.mov_reg_reg(Reg::Rdi, Reg::Rax);
+    assembler.mov_reg_imm64(Reg::Rsi, 0);
+    assembler.mov_reg_imm64(Reg::Rdx, SEEK_END);
+    assembler.mov_reg_imm64(Reg::Rax, syscall::LSEEK);
+    assembler.syscall();
+    assembler.cmp_imm(Reg::Rax, 0);
+    assembler.jcc(Cond::Lt, close_and_fail);
+    assembler.mov_mem_reg(Reg::Rbp, size, Reg::Rax);
+
+    assembler.mov_reg_mem(Reg::Rdi, Reg::Rbp, fd);
+    assembler.mov_reg_imm64(Reg::Rsi, 0);
+    assembler.mov_reg_imm64(Reg::Rdx, SEEK_SET);
+    assembler.mov_reg_imm64(Reg::Rax, syscall::LSEEK);
+    assembler.syscall();
+
+    // The string object holds the length and then the bytes.
+    assembler.mov_reg_mem(Reg::Rdi, Reg::Rbp, size);
+    assembler.add_imm(Reg::Rdi, STRING_DATA_OFFSET);
+    assembler.call(labels.get(Routine::Alloc));
+    assembler.mov_mem_reg(Reg::Rbp, result, Reg::Rax);
+    assembler.mov_reg_mem(Reg::Rcx, Reg::Rbp, size);
+    assembler.mov_mem_reg(Reg::Rax, STRING_LENGTH_OFFSET, Reg::Rcx);
+
+    // read(fd, data, size), repeated until the file is exhausted: one read is
+    // allowed to return less than was asked for.
+    let loop_start = assembler.label();
+    let loop_done = assembler.label();
+    let remaining = -32;
+    assembler.mov_reg_mem(Reg::Rcx, Reg::Rbp, size);
+    assembler.mov_mem_reg(Reg::Rbp, remaining, Reg::Rcx);
+    assembler.mov_reg_mem(Reg::Rax, Reg::Rbp, result);
+    assembler.add_imm(Reg::Rax, STRING_DATA_OFFSET);
+    assembler.mov_reg_reg(Reg::Rsi, Reg::Rax);
+
+    assembler.bind(loop_start);
+    assembler.mov_reg_mem(Reg::Rdx, Reg::Rbp, remaining);
+    assembler.cmp_imm(Reg::Rdx, 0);
+    assembler.jcc(Cond::Le, loop_done);
+    assembler.mov_reg_mem(Reg::Rdi, Reg::Rbp, fd);
+    assembler.mov_reg_imm64(Reg::Rax, syscall::READ);
+    assembler.syscall();
+    assembler.cmp_imm(Reg::Rax, 0);
+    assembler.jcc(Cond::Le, loop_done);
+    assembler.add(Reg::Rsi, Reg::Rax);
+    assembler.mov_reg_mem(Reg::Rcx, Reg::Rbp, remaining);
+    assembler.sub(Reg::Rcx, Reg::Rax);
+    assembler.mov_mem_reg(Reg::Rbp, remaining, Reg::Rcx);
+    assembler.jmp(loop_start);
+    assembler.bind(loop_done);
+
+    assembler.mov_reg_mem(Reg::Rdi, Reg::Rbp, fd);
+    assembler.mov_reg_imm64(Reg::Rax, syscall::CLOSE);
+    assembler.syscall();
+
+    assembler.mov_reg_mem(Reg::Rax, Reg::Rbp, result);
+    epilogue(assembler);
+
+    assembler.bind(close_and_fail);
+    assembler.mov_reg_mem(Reg::Rdi, Reg::Rbp, fd);
+    assembler.mov_reg_imm64(Reg::Rax, syscall::CLOSE);
+    assembler.syscall();
+
+    assembler.bind(failed);
+    assembler.mov_reg_imm64(Reg::Rax, 0);
+    epilogue(assembler);
+}
+
+/// `write_file(path, contents) -> bool`.
+///
+/// True only when every byte reached the file: a short write that is not
+/// retried is a truncated file, and reporting success for one would be worse
+/// than reporting failure.
+fn emit_write_file(assembler: &mut Assembler, labels: &RuntimeLabels) {
+    begin(assembler, labels, Routine::WriteFile);
+    prologue(assembler, 4);
+
+    let contents = -8;
+    let fd = -16;
+    let cursor = -24;
+    let remaining = -32;
+
+    let failed = assembler.label();
+    let close_and_fail = assembler.label();
+
+    assembler.mov_mem_reg(Reg::Rbp, contents, Reg::Rsi);
+
+    assembler.call(labels.c_path);
+    assembler.mov_reg_reg(Reg::Rdi, Reg::Rax);
+    assembler.mov_reg_imm64(Reg::Rsi, O_WRITE_CREATE_TRUNCATE);
+    assembler.mov_reg_imm64(Reg::Rdx, NEW_FILE_MODE);
+    assembler.mov_reg_imm64(Reg::Rax, syscall::OPEN);
+    assembler.syscall();
+    assembler.cmp_imm(Reg::Rax, 0);
+    assembler.jcc(Cond::Lt, failed);
+    assembler.mov_mem_reg(Reg::Rbp, fd, Reg::Rax);
+
+    assembler.mov_reg_mem(Reg::Rsi, Reg::Rbp, contents);
+    assembler.mov_reg_mem(Reg::Rcx, Reg::Rsi, STRING_LENGTH_OFFSET);
+    assembler.mov_mem_reg(Reg::Rbp, remaining, Reg::Rcx);
+    assembler.add_imm(Reg::Rsi, STRING_DATA_OFFSET);
+    assembler.mov_mem_reg(Reg::Rbp, cursor, Reg::Rsi);
+
+    let loop_start = assembler.label();
+    let loop_done = assembler.label();
+    assembler.bind(loop_start);
+    assembler.mov_reg_mem(Reg::Rdx, Reg::Rbp, remaining);
+    assembler.cmp_imm(Reg::Rdx, 0);
+    assembler.jcc(Cond::Le, loop_done);
+    assembler.mov_reg_mem(Reg::Rdi, Reg::Rbp, fd);
+    assembler.mov_reg_mem(Reg::Rsi, Reg::Rbp, cursor);
+    assembler.mov_reg_imm64(Reg::Rax, syscall::WRITE);
+    assembler.syscall();
+    assembler.cmp_imm(Reg::Rax, 0);
+    assembler.jcc(Cond::Le, close_and_fail);
+    assembler.mov_reg_mem(Reg::Rcx, Reg::Rbp, cursor);
+    assembler.add(Reg::Rcx, Reg::Rax);
+    assembler.mov_mem_reg(Reg::Rbp, cursor, Reg::Rcx);
+    assembler.mov_reg_mem(Reg::Rcx, Reg::Rbp, remaining);
+    assembler.sub(Reg::Rcx, Reg::Rax);
+    assembler.mov_mem_reg(Reg::Rbp, remaining, Reg::Rcx);
+    assembler.jmp(loop_start);
+    assembler.bind(loop_done);
+
+    assembler.mov_reg_mem(Reg::Rdi, Reg::Rbp, fd);
+    assembler.mov_reg_imm64(Reg::Rax, syscall::CLOSE);
+    assembler.syscall();
+    assembler.mov_reg_imm64(Reg::Rax, 1);
+    epilogue(assembler);
+
+    assembler.bind(close_and_fail);
+    assembler.mov_reg_mem(Reg::Rdi, Reg::Rbp, fd);
+    assembler.mov_reg_imm64(Reg::Rax, syscall::CLOSE);
+    assembler.syscall();
+
+    assembler.bind(failed);
+    assembler.mov_reg_imm64(Reg::Rax, 0);
+    epilogue(assembler);
 }
 
 /// `string_byte_at(string, index) -> byte`.

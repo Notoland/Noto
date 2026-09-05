@@ -1,0 +1,106 @@
+// A `wc` written in Noto: it counts the lines, words and bytes of the files
+// named on its command line.
+//
+//     noto build examples/wc.noto -o /tmp/wc
+//     /tmp/wc examples/wc.noto examples/lists.noto
+//
+// Everything it needs is in the language and in `strings`, which is itself
+// written in Noto.
+
+import strings { isSpace }
+
+class Counts(val lines: Int, val words: Int, val bytes: Int) {
+    export fn plus(other: Counts): Counts = Counts(
+        this.lines + other.lines,
+        this.words + other.words,
+        this.bytes + other.bytes
+    )
+}
+
+/// Counts one document.
+///
+/// A word is a run of non-space bytes, and a line is a `\n`, so a file that
+/// does not end in one still has its last line counted the way `wc` counts it:
+/// by newlines, not by lines of text.
+export fn count(text: String): Counts {
+    var lines = 0
+    var words = 0
+    var inWord = false
+
+    var at = 0
+    while at < text.length {
+        val byte = text.byteAt(at)
+        if byte == 10 { lines += 1 }
+        if isSpace(byte) {
+            inWord = false
+        } else {
+            if !inWord { words += 1 }
+            inWord = true
+        }
+        at += 1
+    }
+
+    return Counts(lines, words, text.length)
+}
+
+fn report(name: String, counts: Counts) {
+    println("${counts.lines}\t${counts.words}\t${counts.bytes}\t$name")
+}
+
+test "an empty document counts nothing" {
+    val c = count("")
+    assert(c.lines == 0)
+    assert(c.words == 0)
+    assert(c.bytes == 0)
+}
+
+test "words are runs of non-space bytes" {
+    val c = count("um dois  três\n")
+    assert(c.words == 3)
+    assert(c.lines == 1)
+}
+
+test "lines are newlines, and the last one need not end in one" {
+    assert(count("a\nb\n").lines == 2)
+    assert(count("a\nb").lines == 1)
+}
+
+test "bytes are bytes" {
+    // `ã` takes two of them, so this is 5 bytes of 4 characters.
+    assert(count("joão").bytes == 5)
+    assert(count("joão").words == 1)
+}
+
+test "counts add up" {
+    val total = count("a b\n").plus(count("c\n"))
+    assert(total.lines == 2)
+    assert(total.words == 3)
+}
+
+fn main() {
+    val arguments = args()
+    if arguments.length < 2 {
+        println("usage: wc <file>...")
+        return
+    }
+
+    var total = Counts(0, 0, 0)
+    var index = 1
+    var files = 0
+
+    while index < arguments.length {
+        val name = arguments[index]
+        val text = readFile(name)
+        if text == null {
+            println("wc: cannot read $name")
+        } else {
+            val counts = count(text ?: "")
+            report(name, counts)
+            total = total.plus(counts)
+            files += 1
+        }
+        index += 1
+    }
+
+    if files > 1 { report("total", total) }
+}
