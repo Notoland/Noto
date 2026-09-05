@@ -173,6 +173,10 @@ struct Checker<'sink> {
     imports: Vec<Vec<Import>>,
     /// Each module's own top-level value names.
     module_names: Vec<HashMap<String, Resolution>>,
+    /// The type parameters of the declaration being collected or checked.
+    ///
+    /// A stack because a lambda inside a generic function still sees them.
+    type_scope: Vec<HashMap<String, TypeId>>,
     /// Each module's own enum names.
     module_enums: Vec<HashMap<String, EnumId>>,
     /// Each module's own type names.
@@ -211,6 +215,7 @@ impl<'sink> Checker<'sink> {
             module_names: vec![HashMap::new()],
             module_types: vec![HashMap::new()],
             module_enums: vec![HashMap::new()],
+            type_scope: Vec::new(),
             exported: vec![HashSet::new()],
             entry: None,
             current_function: None,

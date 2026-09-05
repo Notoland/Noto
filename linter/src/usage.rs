@@ -143,9 +143,13 @@ fn locals(module: ModuleId, analysis: &Analysis, usage: &Usage, found: &mut Foun
         if owner.module != module || owner.init_of.is_some() {
             continue;
         }
-        // The receiver is bound by the compiler, not written by anyone, so
-        // there is no one to tell that it is unused.
-        if is_ignored(&local.name) || local.name == noto_semantic::RECEIVER_NAME {
+        // The receiver and a lambda's environment are bound by the compiler,
+        // not written by anyone, so there is no one to tell that they are
+        // unused.
+        if is_ignored(&local.name)
+            || local.name == noto_semantic::RECEIVER_NAME
+            || local.name == noto_semantic::ENVIRONMENT_NAME
+        {
             continue;
         }
 

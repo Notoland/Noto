@@ -96,6 +96,8 @@ pub enum DefKind {
     Class,
     /// An `enum` whose cases carry no data: a value of it is its tag.
     Enum,
+    /// A `fn`, which owns the type parameters it declares.
+    Function,
     /// An `enum` some case of which carries data: a value of it is a pointer
     /// to its tag followed by that case's fields.
     EnumWithData,

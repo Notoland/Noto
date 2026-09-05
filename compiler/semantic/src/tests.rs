@@ -471,7 +471,7 @@ fn reports_constructs_the_compiler_cannot_lower_yet() {
         ("data class User(val name: String)\nfn main() {}\n", "not supported by this compiler yet"),
         ("interface Shape { fn area(): Int }\nfn main() {}\n", "not supported by this compiler yet"),
         ("enum Colour { Red = 1 }\nfn main() {}\n", "not supported by this compiler yet"),
-        ("fn f<T>(x: T) {}\nfn main() {}\n", "generic functions are not supported"),
+        ("fn f<T: Comparable>(x: T) {}\nfn main() {}\n", "bounds on a type parameter"),
     ] {
         check_error(source, needle);
     }
@@ -993,6 +993,78 @@ fn the_command_line_is_a_list_of_strings() {
     check_error(
         "fn main() {\n    val n: Int = args()\n}\n",
         "expected `Int`",
+    );
+}
+
+// --- generics ------------------------------------------------------------------
+
+#[test]
+fn a_generic_function_takes_its_type_arguments_from_what_it_is_passed() {
+    check_ok(
+        "fn first<T>(xs: [T]): T = xs[0]\n         fn main() {\n    println(first([1, 2]))\n    println(first([\"a\"]))\n}\n",
+    );
+}
+
+#[test]
+fn a_type_parameter_is_the_same_type_wherever_it_appears() {
+    check_error(
+        "fn pair<T>(a: T, b: T): T = a\n         fn main() {\n    println(pair(1, \"two\"))\n}\n",
+        "cannot take a `String` here",
+    );
+}
+
+#[test]
+fn a_result_mentioning_a_parameter_comes_back_concrete() {
+    check_error(
+        "fn first<T>(xs: [T]): T = xs[0]\n         fn main() {\n    val s: String = first([1, 2])\n}\n",
+        "expected `String`",
+    );
+}
+
+#[test]
+fn a_lambda_takes_its_parameter_type_from_an_earlier_argument() {
+    check_ok(
+        "fn mapped<T, U>(xs: [T], f: fn(T): U): [U] {\n             val out: [U] = []\n    for x in xs { out.push(f(x)) }\n    return out\n}\n         fn main() {\n    println(mapped([1, 2], { it * 2 })[0])\n}\n",
+    );
+}
+
+#[test]
+fn a_parameter_that_appears_in_no_argument_cannot_be_inferred() {
+    check_error(
+        "fn empty<T>(): [T] {\n    val out: [T] = []\n    return out\n}\n         fn main() {\n    println(empty().length)\n}\n",
+        "nothing here says what `T` is",
+    );
+}
+
+#[test]
+fn a_type_parameter_permits_only_moving_the_value() {
+    check_error(
+        "fn twice<T>(value: T): T = value + value\nfn main() {}\n",
+        "cannot",
+    );
+    check_error(
+        "fn field<T>(value: T): Int = value.x\nfn main() {}\n",
+        "has no member",
+    );
+}
+
+#[test]
+fn two_functions_may_each_declare_a_t() {
+    check_ok(
+        "fn one<T>(x: T): T = x\nfn two<T>(x: T): T = x\n         fn main() {\n    println(one(1))\n    println(two(\"a\"))\n}\n",
+    );
+}
+
+#[test]
+fn a_type_parameter_declared_twice_is_reported() {
+    check_error("fn f<T, T>(a: T): T = a\nfn main() {}\n", "declared twice as a type parameter");
+}
+
+#[test]
+fn generic_classes_are_still_refused() {
+    check_error(
+        "class Box<T>(val value: T)\nfn main() {}\n",
+        "generic types are not supported",
     );
 }
 

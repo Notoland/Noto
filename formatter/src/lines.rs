@@ -143,6 +143,7 @@ fn trim_end(gap: &str, start: usize, end: usize) -> usize {
 /// Prints the lines with the indentation and spacing rules applied.
 fn print(lines: &[Line], tokens: &[Token]) -> String {
     let unary = unary_flags(tokens);
+    let in_types = spacing::type_parameter_spans(tokens);
     let mut out = String::new();
     let mut depth: i32 = 0;
 
@@ -161,7 +162,7 @@ fn print(lines: &[Line], tokens: &[Token]) -> String {
         for _ in 0..level.max(0) {
             out.push_str(INDENT);
         }
-        out.push_str(&print_line(line, tokens, &unary));
+        out.push_str(&print_line(line, tokens, &unary, &in_types));
         out.push('\n');
 
         depth += line
@@ -178,7 +179,7 @@ fn print(lines: &[Line], tokens: &[Token]) -> String {
 }
 
 /// Joins one line's pieces, deciding each gap between them.
-fn print_line(line: &Line, tokens: &[Token], unary: &[bool]) -> String {
+fn print_line(line: &Line, tokens: &[Token], unary: &[bool], in_types: &[bool]) -> String {
     let mut out = String::new();
     let mut previous: Option<&TokenKind> = None;
 
@@ -192,8 +193,16 @@ fn print_line(line: &Line, tokens: &[Token], unary: &[bool]) -> String {
                         // legal after a `/* */`; one space, like everything.
                         None => true,
                         Some(previous) => {
-                            spacing::allows_space_after(previous, unary[*index - 1])
-                                && spacing::allows_space_before(kind, Some(previous))
+                            spacing::allows_space_after(
+                                previous,
+                                unary[*index - 1],
+                                in_types[*index - 1],
+                            ) && spacing::allows_space_before(
+                                kind,
+                                Some(previous),
+                                in_types[*index],
+                                in_types[*index - 1],
+                            )
                         }
                     };
                 if space {

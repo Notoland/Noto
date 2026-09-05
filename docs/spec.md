@@ -1,9 +1,9 @@
-# The Noto language specification — 0.11
+# The Noto language specification — 0.12
 
 The language as implemented, section by section. Everything marked **not
 implemented** parses (the parser covers the full grammar) but is rejected
 during semantic analysis or lowering with `NOTO0500 … not implemented in
-Noto 0.11`. Nothing is silently accepted and miscompiled.
+Noto 0.12`. Nothing is silently accepted and miscompiled.
 
 This document describes behaviour; syntax details that deserve their own
 rationale live in [design/](design/).
@@ -254,6 +254,34 @@ than their addresses.
 Everything else — `indexOf`, `contains`, `startsWith`, `split`, `trim`,
 `join`, `repeat` — is written in Noto in `std/string.noto`, on top of those
 three.
+
+## Generics
+
+```noto
+fn first<T>(xs: [T]): T = xs[0]
+
+fn mapped<T, U>(xs: [T], f: fn(T): U): [U] {
+    val out: [U] = []
+    for x in xs { out.push(f(x)) }
+    return out
+}
+```
+
+A generic function is **compiled once**, not once per set of type arguments,
+because every value in Noto is one machine word. The reasoning, and what
+would overturn it, is in [design/generics.md](design/generics.md).
+
+Type arguments are inferred from what the call is passed — `[T]` against
+`[Int]` says `T` is `Int`, and a lambda passed after a list takes its
+parameter types from what that list bound. A parameter appearing in no
+argument cannot be inferred and is an error naming it.
+
+A `T` has no members, no operators and no literals: you may bind it, pass it,
+return it and store it, and nothing else. That is not a rule of its own — `T`
+is not `Int`, so `+` does not apply, and it declares no fields, so `.x` does
+not resolve. Bounds would lift it and need interfaces, which do not exist.
+
+Not implemented: generic classes and enums, bounds, explicit type arguments.
 
 ## Lambdas
 

@@ -42,7 +42,7 @@ impl Checker<'_> {
                 codes::UNSUPPORTED_CONSTRUCT,
                 format!("{what} are not supported by this compiler yet"),
             )
-            .with_primary(span, "not implemented in Noto 0.11")
+            .with_primary(span, "not implemented in Noto 0.12")
         };
 
         if let Some(param) = decl.type_params.first() {
@@ -167,7 +167,7 @@ impl Checker<'_> {
                 codes::UNSUPPORTED_CONSTRUCT,
                 format!("{what} are not supported by this compiler yet"),
             )
-            .with_primary(span, "not implemented in Noto 0.11")
+            .with_primary(span, "not implemented in Noto 0.12")
         };
 
         if decl.class_kind != ClassKind::Class {
@@ -176,7 +176,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     format!("`{}` declarations are not supported by this compiler yet", decl.class_kind.as_str()),
                 )
-                .with_primary(item.span, "not implemented in Noto 0.11")
+                .with_primary(item.span, "not implemented in Noto 0.12")
                 .with_note("a value type is copied on assignment, which needs the memory model")
                 .with_help("declare it as a `class` for now: an object is a reference"),
             );
@@ -247,7 +247,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "default values for constructor parameters are not supported by this compiler yet",
                     )
-                    .with_primary(default.span, "not implemented in Noto 0.11"),
+                    .with_primary(default.span, "not implemented in Noto 0.12"),
                 );
             }
 
@@ -560,6 +560,8 @@ impl Checker<'_> {
             result: if is_setter { unit } else { ty },
             locals: Vec::new(),
             body: accessor.body.as_ref().map(|body| body.id),
+            type_params: Vec::new(),
+            def: None,
             is_lambda: false,
             captures: Vec::new(),
             init_of: None,
@@ -611,6 +613,8 @@ impl Checker<'_> {
             result: class_ty,
             locals: Vec::new(),
             body: None,
+            type_params: Vec::new(),
+            def: None,
             is_lambda: false,
             captures: Vec::new(),
             init_of: Some(class),
@@ -658,7 +662,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "generic methods are not supported by this compiler yet",
                 )
-                .with_primary(function.type_params[0].span, "not implemented in Noto 0.11"),
+                .with_primary(function.type_params[0].span, "not implemented in Noto 0.12"),
             );
             return;
         }
@@ -698,6 +702,8 @@ impl Checker<'_> {
 
         self.functions.push(FunctionInfo {
             name: format!("{class_name}.{short}"),
+            type_params: Vec::new(),
+            def: None,
             module: self.current_module,
             // A method follows its class: exporting the class exports them.
             is_exported: self.classes[class.0 as usize].is_exported,
@@ -759,7 +765,7 @@ impl Checker<'_> {
                             codes::UNSUPPORTED_CONSTRUCT,
                             "default values for case data are not supported by this compiler yet",
                         )
-                        .with_primary(default.span, "not implemented in Noto 0.11"),
+                        .with_primary(default.span, "not implemented in Noto 0.12"),
                     );
                 }
                 let ty = match &field.ty {
@@ -810,7 +816,7 @@ impl Checker<'_> {
                 codes::UNSUPPORTED_CONSTRUCT,
                 format!("`{name}` declarations are not supported by this compiler yet"),
             )
-            .with_primary(item.span, "not implemented in Noto 0.11")
+            .with_primary(item.span, "not implemented in Noto 0.12")
             .with_note(
                 "the syntax is accepted so that tooling can read the whole language; \
                  code generation for it lands in a later release",
@@ -825,19 +831,21 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "extension functions are not supported by this compiler yet",
                 )
-                .with_primary(receiver.span, "not implemented in Noto 0.11"),
+                .with_primary(receiver.span, "not implemented in Noto 0.12"),
             );
             return;
         }
-        if !function.type_params.is_empty() {
-            self.sink.emit(
-                Diagnostic::error(
-                    codes::UNSUPPORTED_CONSTRUCT,
-                    "generic functions are not supported by this compiler yet",
-                )
-                .with_primary(function.type_params[0].span, "not implemented in Noto 0.11"),
-            );
-            return;
+        for parameter in &function.type_params {
+            if let Some(bound) = parameter.bounds.first() {
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::UNSUPPORTED_CONSTRUCT,
+                        "bounds on a type parameter are not supported by this compiler yet",
+                    )
+                    .with_primary(bound.span, "not implemented in Noto 0.12")
+                    .with_note("a type parameter permits only moving the value around"),
+                );
+            }
         }
 
         let name = function.name.name.clone();
@@ -856,6 +864,10 @@ impl Checker<'_> {
         }
 
         let id = FunctionId(self.functions.len() as u32);
+
+        // The type parameters are in scope for the signature and, later, for
+        // the body: a `T` in a result type is the same `T` a local declares.
+        let (def, type_params) = self.declare_type_params(&name, &function.type_params);
         let result = match &function.result {
             Some(ty) => self.resolve_type(ty),
             None => self.store.unit(),
@@ -863,6 +875,8 @@ impl Checker<'_> {
 
         self.functions.push(FunctionInfo {
             name: name.clone(),
+            type_params: type_params.clone(),
+            def,
             module: self.current_module,
             is_exported: item.modifiers.is_exported,
             parameters: Vec::new(),
@@ -891,6 +905,7 @@ impl Checker<'_> {
         }
         self.scopes.pop();
         self.current_function = previous_function;
+        self.leave_type_params(def);
 
         self.scopes.declare(name.clone(), Resolution::Function(id));
         if item.modifiers.is_exported {
@@ -941,7 +956,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "`main` cannot be `async` in this compiler yet",
                 )
-                .with_primary(span, "not implemented in Noto 0.11"),
+                .with_primary(span, "not implemented in Noto 0.12"),
             );
         }
     }
@@ -1007,6 +1022,8 @@ impl Checker<'_> {
             result: unit,
             locals: Vec::new(),
             body: Some(test.body.id),
+            type_params: Vec::new(),
+            def: None,
             is_lambda: false,
             captures: Vec::new(),
             init_of: None,
@@ -1173,7 +1190,8 @@ impl Checker<'_> {
                             codes::UNSUPPORTED_CONSTRUCT,
                             "generic types are not supported by this compiler yet",
                         )
-                        .with_primary(ty.span, "not implemented in Noto 0.11"),
+                        .with_primary(ty.span, "not implemented in Noto 0.12")
+                        .with_note("generic functions are; generic classes are not"),
                     );
                     return self.store.error();
                 }
@@ -1201,8 +1219,83 @@ impl Checker<'_> {
         }
     }
 
+    /// Registers a declaration's type parameters and puts them in scope.
+    ///
+    /// Returns the declaration they belong to, so two functions each
+    /// declaring a `T` never see each other's.
+    pub(crate) fn declare_type_params(
+        &mut self,
+        owner: &str,
+        params: &[noto_ast::TypeParam],
+    ) -> (Option<noto_types::DefId>, Vec<String>) {
+        if params.is_empty() {
+            return (None, Vec::new());
+        }
+
+        let def = self.store.declare(owner.to_string(), noto_types::DefKind::Function);
+        let mut names = Vec::new();
+        let mut scope = std::collections::HashMap::new();
+        for (index, parameter) in params.iter().enumerate() {
+            let name = parameter.name.name.clone();
+            if scope.contains_key(&name) {
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::DUPLICATE_NAME,
+                        format!("`{name}` is declared twice as a type parameter"),
+                    )
+                    .with_primary(parameter.name.span, "redeclared here"),
+                );
+                continue;
+            }
+            let ty = self.store.intern(Type::Parameter {
+                def,
+                index: index as u32,
+                name: name.clone(),
+            });
+            scope.insert(name.clone(), ty);
+            names.push(name);
+        }
+
+        self.type_scope.push(scope);
+        (Some(def), names)
+    }
+
+    /// Takes a declaration's type parameters back out of scope.
+    pub(crate) fn leave_type_params(&mut self, def: Option<noto_types::DefId>) {
+        if def.is_some() {
+            self.type_scope.pop();
+        }
+    }
+
+    /// Puts an already-registered declaration's type parameters back in scope,
+    /// which is what checking its body needs.
+    pub(crate) fn enter_type_params(
+        &mut self,
+        def: Option<noto_types::DefId>,
+        names: &[String],
+    ) {
+        let Some(def) = def else { return };
+        let mut scope = std::collections::HashMap::new();
+        for (index, name) in names.iter().enumerate() {
+            let ty = self.store.intern(Type::Parameter {
+                def,
+                index: index as u32,
+                name: name.clone(),
+            });
+            scope.insert(name.clone(), ty);
+        }
+        self.type_scope.push(scope);
+    }
+
     /// Looks a type name up among the built-in types and declared classes.
     fn resolve_type_name(&mut self, name: &str, span: Span) -> TypeId {
+        // A type parameter shadows everything: inside `fn f<Int>(..)` the
+        // name means the parameter, however strange that is to write.
+        for scope in self.type_scope.iter().rev() {
+            if let Some(ty) = scope.get(name) {
+                return *ty;
+            }
+        }
         if let Some(primitive) = Primitive::from_name(name) {
             return self.store.primitive(primitive);
         }

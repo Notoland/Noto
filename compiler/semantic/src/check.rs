@@ -60,6 +60,8 @@ impl Checker<'_> {
         let info = &self.functions[id.0 as usize];
         let result = info.result;
         let parameters = info.parameters.clone();
+        let (def, type_params) = (info.def, info.type_params.clone());
+        self.enter_type_params(def, &type_params);
 
         self.current_function = Some(id);
         self.expected_result = result;
@@ -73,6 +75,7 @@ impl Checker<'_> {
         let body_type = self.check_block(body);
         self.scopes.pop();
         self.current_function = None;
+        self.leave_type_params(def);
 
         // A body whose last expression has the right type is a valid result,
         // which is what makes `fn double(n: Int): Int = n * 2` work.
@@ -273,7 +276,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "declarations inside a function body are not supported yet",
                     )
-                    .with_primary(stmt.span, "not implemented in Noto 0.11")
+                    .with_primary(stmt.span, "not implemented in Noto 0.12")
                     .with_help("move the declaration to the top level of the file"),
                 );
                 self.store.unit()
@@ -357,7 +360,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this pattern is not supported in a binding yet",
                     )
-                    .with_primary(pattern.span, "not implemented in Noto 0.11")
+                    .with_primary(pattern.span, "not implemented in Noto 0.12")
                     .with_help("bind a name, a tuple of names, or `_`"),
                 );
             }
@@ -384,7 +387,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         format!("cannot iterate over a `{rendered}` yet"),
                     )
-                    .with_primary(iterable.span, "not iterable in Noto 0.11")
+                    .with_primary(iterable.span, "not iterable in Noto 0.12")
                     .with_help("iterate over a range, as in `for i in 0..10`"),
                 );
                 self.store.error()
@@ -455,7 +458,7 @@ impl Checker<'_> {
                     let ty = self.check_expr_expecting(bound, int);
                     self.expect_assignable(ty, int, bound.span, None);
                 }
-                // Ranges exist only inside `for` and `when` in Noto 0.11; there
+                // Ranges exist only inside `for` and `when` in Noto 0.12; there
                 // is no first-class `Range` type to give them yet.
                 self.store.unit()
             }
@@ -476,7 +479,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this expression is not supported by this compiler yet",
                     )
-                    .with_primary(expr.span, "not implemented in Noto 0.11"),
+                    .with_primary(expr.span, "not implemented in Noto 0.12"),
                 );
                 self.store.error()
             }
@@ -578,7 +581,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "an async lambda is not supported by this compiler yet",
                 )
-                .with_primary(expr.span, "not implemented in Noto 0.11"),
+                .with_primary(expr.span, "not implemented in Noto 0.12"),
             );
             return self.store.error();
         }
@@ -596,6 +599,8 @@ impl Checker<'_> {
             name: format!("lambda${}", id.0),
             module: self.current_module,
             is_exported: false,
+            type_params: Vec::new(),
+            def: None,
             is_lambda: true,
             captures: Vec::new(),
             parameters: Vec::new(),
@@ -1212,7 +1217,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "`in` is not supported outside a `when` arm yet",
                     )
-                    .with_primary(span, "not implemented in Noto 0.11"),
+                    .with_primary(span, "not implemented in Noto 0.12"),
                 );
                 bool_ty
             }
@@ -1662,7 +1667,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this pattern is not supported by this compiler yet",
                     )
-                    .with_primary(pattern.span, "not implemented in Noto 0.11"),
+                    .with_primary(pattern.span, "not implemented in Noto 0.12"),
                 );
             }
         }
@@ -1822,7 +1827,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "explicit type arguments are not supported by this compiler yet",
                 )
-                .with_primary(expr.span, "not implemented in Noto 0.11"),
+                .with_primary(expr.span, "not implemented in Noto 0.12"),
             );
         }
 
@@ -1833,7 +1838,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "named arguments are not supported by this compiler yet",
                     )
-                    .with_primary(name.span, "not implemented in Noto 0.11")
+                    .with_primary(name.span, "not implemented in Noto 0.12")
                     .with_help("pass the arguments positionally"),
                 );
             }
@@ -1913,7 +1918,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "safe calls are not supported by this compiler yet",
                     )
-                    .with_primary(expr.span, "not implemented in Noto 0.11"),
+                    .with_primary(expr.span, "not implemented in Noto 0.12"),
                 );
                 return self.store.error();
             }
@@ -1984,6 +1989,15 @@ impl Checker<'_> {
             }
         }
 
+        // A call of a name that resolves to a declared function is checked
+        // against that declaration, which is where its type parameters are.
+        if let ExprKind::Path(path) = &call.callee.kind {
+            if let Some(Resolution::Function(id)) = self.lookup_value(&path.to_dotted()) {
+                self.record_resolution(call.callee.id, Resolution::Function(id));
+                return self.check_function_arguments(expr, call, id);
+            }
+        }
+
         let callee_ty = self.check_expr(&call.callee);
         let Type::Function { parameters, result, .. } = self.store.get(callee_ty).clone() else {
             if !self.store.get(callee_ty).is_error() {
@@ -2028,19 +2042,83 @@ impl Checker<'_> {
     ) -> TypeId {
         let info = &self.functions[function.0 as usize];
         let (name, result) = (info.name.clone(), info.result);
+        let is_generic = !info.type_params.is_empty();
+        let type_params = info.type_params.clone();
         let expected: Vec<TypeId> =
             info.parameters.iter().map(|local| self.locals[local.0 as usize].ty).collect();
 
         self.check_argument_count(expr.span, call.arguments.len(), expected.len(), &name);
 
-        for (argument, expected) in call.arguments.iter().zip(&expected) {
-            let found = self.check_expr_expecting(&argument.value, *expected);
-            self.expect_assignable(found, *expected, argument.value.span, None);
+        if !is_generic {
+            for (argument, expected) in call.arguments.iter().zip(&expected) {
+                let found = self.check_expr_expecting(&argument.value, *expected);
+                self.expect_assignable(found, *expected, argument.value.span, None);
+            }
+            for argument in call.arguments.iter().skip(expected.len()) {
+                self.check_expr(&argument.value);
+            }
+            self.record_type(call.callee.id, result);
+            return result;
+        }
+
+        // A generic call reads its type arguments out of what it was passed:
+        // matching `[T]` against `[Int]` says what `T` is.
+        let mut bound = std::collections::HashMap::new();
+        for (argument, declared) in call.arguments.iter().zip(&expected) {
+            // What is expected of the argument is the declared type with
+            // whatever is known so far filled in, so a lambda passed second
+            // takes its parameter types from a list passed first.
+            //
+            // A hint still mentioning a parameter is no help and would be a
+            // lie — `[T]` would reject every element of `[1, 2]`. A function
+            // type is the exception: only its parameters are read from a
+            // hint, and those are what the earlier arguments just bound.
+            let hint = self.store.substitute(*declared, &bound);
+            let usable = !self.store.is_generic(hint)
+                || matches!(self.store.get(hint), Type::Function { .. });
+            let found = if usable {
+                self.check_expr_expecting(&argument.value, hint)
+            } else {
+                self.check_expr(&argument.value)
+            };
+            if !self.store.unify(*declared, found, &mut bound) {
+                let (wanted, got) =
+                    (self.store.render(hint), self.store.render(found));
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::TYPE_MISMATCH,
+                        format!("`{name}` cannot take a `{got}` here"),
+                    )
+                    .with_primary(argument.value.span, format!("expected `{wanted}`")),
+                );
+            }
         }
         for argument in call.arguments.iter().skip(expected.len()) {
             self.check_expr(&argument.value);
         }
 
+        let missing: Vec<&String> = type_params
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| {
+                info_def(&self.functions[function.0 as usize])
+                    .is_some_and(|def| !bound.contains_key(&(def, *index as u32)))
+            })
+            .map(|(_, name)| name)
+            .collect();
+        if let Some(first) = missing.first() {
+            self.sink.emit(
+                Diagnostic::error(
+                    codes::CANNOT_INFER,
+                    format!("nothing here says what `{first}` is in `{name}`"),
+                )
+                .with_primary(expr.span, "it appears in no argument")
+                .with_help("pass a value that mentions it"),
+            );
+            return self.store.error();
+        }
+
+        let result = self.store.substitute(result, &bound);
         self.record_type(call.callee.id, result);
         result
     }
@@ -2710,4 +2788,9 @@ pub(crate) fn find_expr<'a>(
         .filter_map(|field| field.default.as_ref())
         .chain(decl.properties.iter().filter_map(|property| property.default.as_ref()))
         .find(|expr| expr.id == id)
+}
+
+/// The declaration a function's type parameters belong to.
+fn info_def(info: &crate::FunctionInfo) -> Option<noto_types::DefId> {
+    info.def
 }

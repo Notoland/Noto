@@ -32,6 +32,8 @@ fn corpus() -> Vec<&'static str> {
         "/// Doc comment.\nfn documented() {\n}\n",
         "const LIMIT: Int = 10\n\nfn main() {\n    println(LIMIT)\n}\n",
         "fn main() {\n    val total = 1 +\n        2\n    println(total)\n}\n",
+        "fn first<T>(xs: [T]): T = xs[0]\n",
+        "fn apply(f: fn(Int): Int): Int = f(1)\n",
         "test \"it works\" {\n    assert(true)\n}\n",
     ]
 }
@@ -147,6 +149,32 @@ fn a_nullable_marker_takes_no_space_before_it() {
     assert_eq!(
         fmt("fn main() { val v : String ? = null }\n"),
         "fn main() { val v: String? = null }\n"
+    );
+}
+
+#[test]
+fn a_type_parameter_list_is_written_tight() {
+    assert_eq!(
+        fmt("fn first < T > (xs: [T]): T = xs[0]\n"),
+        "fn first<T>(xs: [T]): T = xs[0]\n"
+    );
+    assert_eq!(
+        fmt("fn both<T,U>(a: T, b: U): T = a\n"),
+        "fn both<T, U>(a: T, b: U): T = a\n"
+    );
+}
+
+#[test]
+fn a_comparison_keeps_its_spaces() {
+    // The same `<` outside a type parameter list is an operator.
+    assert_eq!(fmt("fn f(a: Int): Bool = a<2\n"), "fn f(a: Int): Bool = a < 2\n");
+}
+
+#[test]
+fn a_function_type_keeps_its_parenthesis_close() {
+    assert_eq!(
+        fmt("fn apply(f: fn (Int): Int): Int = f(1)\n"),
+        "fn apply(f: fn(Int): Int): Int = f(1)\n"
     );
 }
 

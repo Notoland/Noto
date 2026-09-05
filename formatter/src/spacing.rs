@@ -6,14 +6,61 @@
 //! apart is what makes `String? = null` come out right — `?` refuses a space
 //! *before* it and has nothing to say about what follows.
 
-use noto_lexer::{Keyword, TokenKind};
+use noto_lexer::{Keyword, Token, TokenKind};
+
+/// Marks the tokens that belong to a `fn name<T, U>` parameter list.
+///
+/// `<` is a comparison everywhere else, and a formatter that works on tokens
+/// cannot tell the two apart from the pair alone. This is the one place the
+/// grammar leaves no choice: after `fn` and a name, a `<` opens type
+/// parameters. Everything from it to the matching `>` is marked, and the
+/// spacing rules below tighten what is marked.
+pub(crate) fn type_parameter_spans(tokens: &[Token]) -> Vec<bool> {
+    let mut marked = vec![false; tokens.len()];
+    let mut index = 0;
+
+    while index + 2 < tokens.len() {
+        let opens = matches!(tokens[index].kind, TokenKind::Keyword(Keyword::Fn))
+            && matches!(tokens[index + 1].kind, TokenKind::Ident(_))
+            && tokens[index + 2].kind == TokenKind::Lt;
+        if !opens {
+            index += 1;
+            continue;
+        }
+
+        let mut depth = 0usize;
+        let mut at = index + 2;
+        while at < tokens.len() {
+            match tokens[at].kind {
+                TokenKind::Lt => depth += 1,
+                TokenKind::Gt => depth -= 1,
+                // A type parameter list holds names, commas and nothing that
+                // could close it another way; anything else means this was a
+                // comparison after all.
+                TokenKind::Ident(_) | TokenKind::Comma | TokenKind::Colon => {}
+                _ => break,
+            }
+            marked[at] = true;
+            if depth == 0 {
+                break;
+            }
+            at += 1;
+        }
+        index = at.max(index + 1);
+    }
+
+    marked
+}
 
 /// Whether a space may follow this token.
 ///
 /// `is_unary` distinguishes `-x` from `a - b`; it is decided by
 /// [`is_unary_position`] from the token before it.
-pub(crate) fn allows_space_after(kind: &TokenKind, is_unary: bool) -> bool {
+pub(crate) fn allows_space_after(kind: &TokenKind, is_unary: bool, in_types: bool) -> bool {
     use TokenKind::*;
+    if in_types && matches!(kind, Lt) {
+        return false;
+    }
     match kind {
         LParen | LBracket | Dot | QuestionDot | ColonColon | DotDot | DotDotEq | At | Bang
         | Tilde => false,
@@ -27,14 +74,29 @@ pub(crate) fn allows_space_after(kind: &TokenKind, is_unary: bool) -> bool {
 /// `previous` decides the two tokens that mean different things depending on
 /// what they follow: `(` and `[` open a call or an index after a name, and a
 /// grouped expression or a list literal after anything else.
-pub(crate) fn allows_space_before(kind: &TokenKind, previous: Option<&TokenKind>) -> bool {
+pub(crate) fn allows_space_before(
+    kind: &TokenKind,
+    previous: Option<&TokenKind>,
+    in_types: bool,
+    previous_in_types: bool,
+) -> bool {
     use TokenKind::*;
+    if in_types && matches!(kind, Lt | Gt) {
+        return false;
+    }
     match kind {
         RParen | RBracket | Comma | Semicolon | Colon | Dot | QuestionDot | ColonColon
         | DotDot | DotDotEq | Question => false,
         // An empty block is written `{}`, not `{ }`.
         RBrace => previous != Some(&LBrace),
-        LParen | LBracket => !previous.is_some_and(is_callee),
+        // `fn(Int): Int` is a function type, and the parenthesis belongs to
+        // the `fn`; `f<T>(x)` closes its type parameters onto its own
+        // parameter list.
+        LParen | LBracket => {
+            !previous.is_some_and(is_callee)
+                && previous != Some(&Keyword(self::Keyword::Fn))
+                && !(previous_in_types && previous == Some(&Gt))
+        }
         _ => true,
     }
 }

@@ -5,7 +5,7 @@ human or agent. Read this before touching anything.
 
 **Where the project stands:** the compiler is real and works end to end. A
 `.noto` file becomes a static native ELF executable with no LLVM, no libc, and
-no external toolchain. 521 tests pass, 0 fail, no warnings. The whole tool
+no external toolchain. 533 tests pass, 0 fail, no warnings. The whole tool
 set — `run`, `build`, `check`, `test`, `lint`, `fmt` — is implemented, and
 `class` gives the language its first object type.
 
@@ -62,7 +62,7 @@ noto/
 ├── test-runner/      noto-test-runner  `noto test`, one process per test  11 tests
 ├── lsp/              noto-lsp          STUB
 ├── debugger/         noto-debugger     STUB
-├── std/              math.noto, string.noto
+├── std/              math.noto, string.noto, list.noto
 ├── docs/             architecture, spec, design notes, RFCs
 ├── examples/         hello.noto, tests.noto, point.noto
 └── tests/            EMPTY
@@ -110,6 +110,10 @@ fn main() {
   `noto test`
 - `import`/`export`: a program is many files, one module each, resolved from
   the root file's directory
+- generic functions (`fn first<T>(xs: [T]): T`), erased rather than
+  monomorphised because every value is one machine word — see
+  `docs/design/generics.md`, which also says what floats would overturn.
+  `std/list.noto` is written on them
 - inside a method a bare name is the receiver's member, and `p?.x` reads a
   field or property through a nullable receiver, producing a nullable result
 - lambdas: a value of type `fn(A): B`, capturing by value into a closure of
@@ -147,7 +151,7 @@ in Noto 0.1`. Nothing is silently accepted and miscompiled.
 | class inheritance, interfaces, defaults on constructor parameters | `collect.rs` `declare_class` | fields, methods and properties work |
 | `interface` | same | |
 | explicit enum case values (`Red = 1`), methods on an enum | `collect.rs` `declare_enum` | enums otherwise work, data included |
-| generics (`fn f<T>`, `List<T>`) | `collect.rs` `collect_fn`, `resolve_type` | monomorphisation not designed yet |
+| generic classes and enums, bounds, explicit type arguments | `collect.rs` `declare_class`, `resolve_type` | generic *functions* work |
 | extension functions | `collect.rs` `collect_fn` | receiver resolution missing |
 | floats | `compiler/lower/src/expr.rs` `lower_literal` | needs SSE registers in the backend |
 | `defer` | `compiler/lower/src/stmt.rs` `lower_stmt` | needs scope-exit tracking |
@@ -260,7 +264,9 @@ handful of intrinsics.
 3. **enums** — ~~cases, associated data, matching, destructuring and
    exhaustiveness~~ done. What remains: explicit case values (`Red = 1`),
    methods on an enum, and `is`/`as` narrowing.
-4. **generics** — decide monomorphisation vs boxing, write an RFC first.
+4. **generics** — ~~functions~~ done, by erasure. What remains: generic
+   classes and enums, bounds (which need interfaces), and explicit type
+   arguments (which a parameter appearing only in the result would need).
 5. **floats** — SSE registers in the encoder and a second register class.
 6. **`defer`** — scope-exit tracking in lowering, including error paths.
 7. async/await, FFI, LSP, debugger, package manager, registry.
@@ -307,7 +313,7 @@ RFC.
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
-cargo test --workspace          # 521 tests, must stay at 0 failures
+cargo test --workspace          # 533 tests, must stay at 0 failures
 cargo build --workspace
 cargo run -q -p noto-driver --example emit -- examples/hello.noto /tmp/hello && /tmp/hello
 ```

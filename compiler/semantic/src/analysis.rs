@@ -124,6 +124,11 @@ pub struct FunctionInfo {
     /// Whether it came from a lambda, in which case its first parameter is
     /// the environment its captures live in.
     pub is_lambda: bool,
+    /// The type parameters it declares, in order; empty when it declares
+    /// none.
+    pub type_params: Vec<String>,
+    /// The declaration its type parameters belong to.
+    pub def: Option<DefId>,
     /// The locals it reads from an enclosing function, in the order they are
     /// laid out in that environment.
     pub captures: Vec<LocalId>,

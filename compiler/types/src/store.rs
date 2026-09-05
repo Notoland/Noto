@@ -311,6 +311,98 @@ impl TypeStore {
         None
     }
 
+    /// Whether `pattern`, which may mention type parameters, matches `actual`.
+    ///
+    /// Every parameter it meets is bound in `bound`, and a parameter already
+    /// bound must meet the same type again — which is what makes
+    /// `fn pair<T>(a: T, b: T)` reject two different types.
+    pub fn unify(
+        &self,
+        pattern: TypeId,
+        actual: TypeId,
+        bound: &mut std::collections::HashMap<(DefId, u32), TypeId>,
+    ) -> bool {
+        if self.get(pattern).is_error() || self.get(actual).is_error() {
+            return true;
+        }
+        if let Type::Parameter { def, index, .. } = self.get(pattern) {
+            let key = (*def, *index);
+            return match bound.get(&key) {
+                Some(already) => *already == actual,
+                None => {
+                    bound.insert(key, actual);
+                    true
+                }
+            };
+        }
+
+        match (self.get(pattern), self.get(actual)) {
+            (Type::List(left), Type::List(right)) => self.unify(*left, *right, bound),
+            (Type::Nullable(left), Type::Nullable(right)) => self.unify(*left, *right, bound),
+            // A plain value where a nullable is wanted is still a match, and
+            // the parameter binds to what is actually there.
+            (Type::Nullable(left), _) => self.unify(*left, actual, bound),
+            (Type::Tuple(left), Type::Tuple(right)) => {
+                left.len() == right.len()
+                    && left.iter().zip(right).all(|(a, b)| self.unify(*a, *b, bound))
+            }
+            (
+                Type::Function { parameters: left, result: left_result, .. },
+                Type::Function { parameters: right, result: right_result, .. },
+            ) => {
+                left.len() == right.len()
+                    && left.iter().zip(right).all(|(a, b)| self.unify(*a, *b, bound))
+                    && self.unify(*left_result, *right_result, bound)
+            }
+            _ => self.is_assignable(actual, pattern),
+        }
+    }
+
+    /// Replaces every type parameter in `ty` with what it was bound to.
+    pub fn substitute(
+        &mut self,
+        ty: TypeId,
+        bound: &std::collections::HashMap<(DefId, u32), TypeId>,
+    ) -> TypeId {
+        match self.get(ty).clone() {
+            Type::Parameter { def, index, .. } => {
+                bound.get(&(def, index)).copied().unwrap_or(ty)
+            }
+            Type::List(element) => {
+                let element = self.substitute(element, bound);
+                self.intern(Type::List(element))
+            }
+            Type::Nullable(inner) => {
+                let inner = self.substitute(inner, bound);
+                self.nullable(inner)
+            }
+            Type::Tuple(items) => {
+                let items = items.iter().map(|item| self.substitute(*item, bound)).collect();
+                self.intern(Type::Tuple(items))
+            }
+            Type::Function { parameters, result, is_async } => {
+                let parameters =
+                    parameters.iter().map(|p| self.substitute(*p, bound)).collect();
+                let result = self.substitute(result, bound);
+                self.intern(Type::Function { parameters, result, is_async })
+            }
+            _ => ty,
+        }
+    }
+
+    /// Whether a type mentions any type parameter.
+    pub fn is_generic(&self, ty: TypeId) -> bool {
+        match self.get(ty) {
+            Type::Parameter { .. } => true,
+            Type::List(inner) | Type::Nullable(inner) => self.is_generic(*inner),
+            Type::Tuple(items) => items.iter().any(|item| self.is_generic(*item)),
+            Type::Function { parameters, result, .. } => {
+                parameters.iter().any(|p| self.is_generic(*p)) || self.is_generic(*result)
+            }
+            _ => false,
+        }
+    }
+
     /// Renders a type the way it is written in source.
     pub fn render(&self, id: TypeId) -> String {
         match self.get(id) {
