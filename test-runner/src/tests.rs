@@ -133,3 +133,56 @@ mod execution {
         assert_eq!(report.results[0].outcome, Outcome::Passed);
     }
 }
+
+// --- executing a file the kernel considers busy ----------------------------
+
+/// Builds a trivially passing test as a real executable on disk.
+fn passing_executable(directory: &Path) -> PathBuf {
+    let mut program = lower("test \"trivial\" {\n    assert(true)\n}\n");
+    let tests = discover(&program);
+    program.entry = Some(tests[0].function);
+    let bytes = noto_codegen::compile(&program, Target::host()).expect("compiles");
+
+    let path = directory.join("busy");
+    write_executable(&path, &bytes).expect("the executable is written");
+    path
+}
+
+#[test]
+fn an_executable_that_is_briefly_busy_is_waited_out() {
+    // The race this reproduces is a writer holding the file open while it is
+    // executed. In the wild that writer is a child another thread forked, and
+    // the handle goes away when the child reaches its own `exec`; here it is
+    // held deliberately and released on a timer, which is the same shape.
+    let directory = scratch_directory(&std::env::temp_dir()).expect("a scratch directory");
+    let path = passing_executable(&directory);
+
+    let holder = std::fs::OpenOptions::new().write(true).open(&path).expect("held open");
+    let releaser = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        drop(holder);
+    });
+
+    let status = execute(&path).expect("a briefly busy file is waited out, not reported");
+    assert!(status.success());
+
+    releaser.join().expect("the holder thread finishes");
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_dir(&directory);
+}
+
+#[test]
+fn a_file_that_never_stops_being_busy_is_reported() {
+    // The retry is bounded: a file genuinely held open forever has to produce
+    // an error rather than hang the run.
+    let directory = scratch_directory(&std::env::temp_dir()).expect("a scratch directory");
+    let path = passing_executable(&directory);
+
+    let _holder = std::fs::OpenOptions::new().write(true).open(&path).expect("held open");
+    let error = execute(&path).expect_err("a permanently busy file cannot run");
+    assert_eq!(error.raw_os_error(), Some(TEXT_FILE_BUSY));
+
+    drop(_holder);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_dir(&directory);
+}

@@ -5,7 +5,7 @@ human or agent. Read this before touching anything.
 
 **Where the project stands:** the compiler is real and works end to end. A
 `.noto` file becomes a static native ELF executable with no LLVM, no libc and
-no external toolchain. 585 tests pass, 0 fail, no warnings. The whole tool
+no external toolchain. 587 tests pass, 0 fail, no warnings. The whole tool
 set — `run`, `build`, `check`, `test`, `lint`, `fmt` — is implemented, and so
 is enough of the language to write real programs in it: `examples/wc.noto` is
 a `wc` that prints the same numbers as the system one.
@@ -84,7 +84,7 @@ noto/
 ├── cli/              noto-cli          the `noto` command
 ├── formatter/        noto-formatter    `noto fmt`, token-stream based        35 tests
 ├── linter/           noto-linter       `noto lint`, NOTO0600/0601/0603/0604/0605  26 tests
-├── test-runner/      noto-test-runner  `noto test`, one process per test     11 tests
+├── test-runner/      noto-test-runner  `noto test`, one process per test     13 tests
 ├── lsp/              noto-lsp          STUB
 ├── debugger/         noto-debugger     STUB
 ├── std/              math.noto, string.noto, list.noto — written in Noto
@@ -389,7 +389,7 @@ RFC.
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
-cargo test --workspace          # 585 tests, must stay at 0 failures
+cargo test --workspace          # 587 tests, must stay at 0 failures
 cargo build --workspace         # must stay at 0 warnings
 
 # The Rust tests are half the suite. Every .noto file carries its own, and a

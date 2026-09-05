@@ -177,13 +177,50 @@ fn build_and_run(program: &Program, target: Target, path: &Path) -> Outcome {
         return Outcome::NotBuilt(format!("cannot write `{}`: {error}", path.display()));
     }
 
-    match std::process::Command::new(path).status() {
+    match execute(path) {
         Ok(status) if status.success() => Outcome::Passed,
         Ok(status) => match status.code() {
             Some(code) if code == noto_runtime::ASSERT_FAILURE_STATUS => Outcome::Failed,
             code => Outcome::Errored(code),
         },
         Err(error) => Outcome::NotBuilt(format!("cannot run `{}`: {error}", path.display())),
+    }
+}
+
+/// `ETXTBSY`: the file is open for writing somewhere, so it cannot be executed.
+const TEXT_FILE_BUSY: i32 = 26;
+
+/// How many times to retry an execution the kernel refused as busy.
+///
+/// The window is one `fork` wide, so a handful of attempts is generous; a
+/// bound means a genuinely busy file still reports rather than hanging.
+const BUSY_ATTEMPTS: u32 = 20;
+
+/// Runs the executable, tolerating a file that is briefly busy.
+///
+/// Writing a file and then executing it races with any *other* thread that
+/// spawns a process in between. `fork` hands the child every descriptor open
+/// at that moment, including the one this thread has on the executable it just
+/// wrote, and `O_CLOEXEC` does not help: it closes at `exec`, and the child is
+/// still between the two. The kernel then refuses to execute a file some
+/// process holds open for writing.
+///
+/// Nothing here can stop another thread forking at the wrong moment, so the
+/// window is waited out rather than closed. It shuts as soon as that child
+/// reaches its own `exec`, which is why the pauses are short.
+fn execute(path: &Path) -> std::io::Result<std::process::ExitStatus> {
+    let mut attempt = 0;
+    loop {
+        match std::process::Command::new(path).status() {
+            Err(error)
+                if error.raw_os_error() == Some(TEXT_FILE_BUSY)
+                    && attempt < BUSY_ATTEMPTS =>
+            {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(u64::from(attempt)));
+            }
+            result => return result,
+        }
     }
 }
 
