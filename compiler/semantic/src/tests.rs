@@ -470,7 +470,6 @@ fn reports_constructs_the_compiler_cannot_lower_yet() {
         ("struct Point(val x: Int)\nfn main() {}\n", "not supported by this compiler yet"),
         ("data class User(val name: String)\nfn main() {}\n", "not supported by this compiler yet"),
         ("enum Colour { Red = 1 }\nfn main() {}\n", "not supported by this compiler yet"),
-        ("fn f<T: Comparable>(x: T) {}\nfn main() {}\n", "bounds on a type parameter"),
         (
             "interface Into<T> { fn into(): T }\nfn main() {}\n",
             "generic interfaces are not supported by this compiler yet",
@@ -679,6 +678,157 @@ fn a_class_cannot_be_implemented_like_an_interface() {
          fn main() {}\n",
         "base classes are not supported by this compiler yet",
     );
+}
+
+// --- bounds ----------------------------------------------------------------
+
+/// `Comparable` and a class implementing it, for the bound tests to build on.
+const COMPARABLE: &str = "interface Comparable {\n    fn compareTo(other: Self): Int\n}\n\
+     class Version(val major: Int): Comparable {\n    fn compareTo(other: Version): Int = major - other.major\n}\n";
+
+#[test]
+fn a_bound_is_recorded_on_the_type_parameter() {
+    let source = format!("{COMPARABLE}fn firstOf<T: Comparable>(xs: [T]): T = xs[0]\nfn main() {{}}\n");
+    let analysis = check_ok(&source);
+    let function = analysis.function(analysis.function_named("firstOf").unwrap());
+    let def = function.def.unwrap();
+    assert_eq!(analysis.bounds_on(def, 0).len(), 1);
+    assert_eq!(analysis.interface(analysis.bounds_on(def, 0)[0]).name, "Comparable");
+}
+
+#[test]
+fn a_conforming_type_argument_satisfies_a_bound() {
+    check_ok(&format!(
+        "{COMPARABLE}fn firstOf<T: Comparable>(xs: [T]): T = xs[0]\n\
+         fn main() {{\n    println(firstOf([Version(1), Version(2)]).major)\n}}\n"
+    ));
+}
+
+#[test]
+fn a_type_argument_that_does_not_implement_the_bound_is_rejected() {
+    check_error(
+        &format!(
+            "{COMPARABLE}class Circle(val r: Int)\n\
+             fn firstOf<T: Comparable>(xs: [T]): T = xs[0]\n\
+             fn main() {{\n    println(firstOf([Circle(1)]).r)\n}}\n"
+        ),
+        "`Circle` does not implement `Comparable`",
+    );
+}
+
+#[test]
+fn a_bound_is_checked_at_the_call_not_the_declaration() {
+    // The declaration alone is fine; only a use with a bad argument fails.
+    check_ok(&format!(
+        "{COMPARABLE}fn firstOf<T: Comparable>(xs: [T]): T = xs[0]\nfn main() {{}}\n"
+    ));
+}
+
+#[test]
+fn a_built_in_type_does_not_satisfy_a_bound_yet_and_says_why() {
+    let (_, messages) = check(&format!(
+        "{COMPARABLE}fn firstOf<T: Comparable>(xs: [T]): T = xs[0]\n\
+         fn main() {{\n    println(firstOf([1, 2, 3]))\n}}\n"
+    ));
+    // Suggesting `class Int(..): Comparable` would be advice nobody can take.
+    assert!(
+        messages.iter().any(|m| m.contains("`Int` does not implement `Comparable`")),
+        "{messages:?}"
+    );
+}
+
+#[test]
+fn a_bound_is_satisfied_through_what_the_interface_extends() {
+    // `T: Ordered` may be passed where `U: Comparable` is wanted, because
+    // implementing `Ordered` requires `Comparable`.
+    check_ok(
+        "interface Comparable {\n    fn compareTo(other: Self): Int\n}\n\
+         interface Ordered : Comparable {\n    fn rank(): Int\n}\n\
+         fn needsComparable<U: Comparable>(x: U): U = x\n\
+         fn forwards<T: Ordered>(x: T): T = needsComparable(x)\n\
+         fn main() {}\n",
+    );
+}
+
+#[test]
+fn an_unbounded_parameter_still_satisfies_nothing() {
+    check_error(
+        "interface Sized {\n    val size: Int\n}\n\
+         fn needsSized<U: Sized>(x: U): U = x\n\
+         fn forwards<T>(x: T): T = needsSized(x)\n\
+         fn main() {}\n",
+        "does not implement `Sized`",
+    );
+}
+
+#[test]
+fn a_generic_class_checks_its_bound_at_construction() {
+    check_error(
+        "interface Sized {\n    val size: Int\n}\n\
+         class Circle(val r: Int)\n\
+         class Holder<T: Sized>(val item: T)\n\
+         fn main() {\n    println(Holder(Circle(1)).item.r)\n}\n",
+        "`Circle` does not implement `Sized`",
+    );
+}
+
+#[test]
+fn a_generic_class_accepts_a_conforming_argument() {
+    check_ok(
+        "interface Sized {\n    val size: Int\n}\n\
+         class Buffer(val size: Int): Sized\n\
+         class Holder<T: Sized>(val item: T)\n\
+         fn main() {\n    println(Holder(Buffer(4)).item.size)\n}\n",
+    );
+}
+
+#[test]
+fn calling_a_bound_member_is_still_rejected_and_says_why() {
+    // Bounds constrain; they do not yet dispatch. The error has to say that,
+    // or it reads as though the bound had not been noticed.
+    let (_, messages) = check(&format!(
+        "{COMPARABLE}fn largest<T: Comparable>(xs: [T]): T {{\n    return xs[0].compareTo(xs[0])\n}}\n\
+         fn main() {{}}\n"
+    ));
+    assert!(
+        messages.iter().any(|m| m.contains("has no method `compareTo`")),
+        "{messages:?}"
+    );
+}
+
+#[test]
+fn a_bound_must_name_an_interface() {
+    check_error(
+        "class Version(val major: Int)\n\
+         fn firstOf<T: Version>(xs: [T]): T = xs[0]\n\
+         fn main() {}\n",
+        "base classes are not supported by this compiler yet",
+    );
+    check_error(
+        "fn firstOf<T: Nowhere>(xs: [T]): T = xs[0]\nfn main() {}\n",
+        "cannot find interface `Nowhere`",
+    );
+}
+
+#[test]
+fn the_same_bound_twice_is_reported() {
+    check_error(
+        &format!("{COMPARABLE}fn firstOf<T: Comparable + Comparable>(xs: [T]): T = xs[0]\nfn main() {{}}\n"),
+        "is named twice as a bound",
+    );
+}
+
+#[test]
+fn unbounded_generics_are_unchanged() {
+    // The whole point of the witness design is that an unbounded generic pays
+    // nothing; nothing here should have started constraining one.
+    let analysis = check_ok(
+        "fn first<T>(xs: [T]): T = xs[0]\n\
+         class Box<T>(val value: T)\n\
+         fn main() {\n    println(first([1, 2]))\n    println(Box(\"a\").value)\n}\n",
+    );
+    let first = analysis.function(analysis.function_named("first").unwrap());
+    assert!(analysis.bounds_on(first.def.unwrap(), 0).is_empty());
 }
 
 #[test]

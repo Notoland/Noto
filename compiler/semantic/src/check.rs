@@ -2093,13 +2093,26 @@ impl Checker<'_> {
                 _ if self.store.get(base).is_error() => return self.store.error(),
                 _ => {
                     let rendered = self.store.render(base);
-                    self.sink.emit(
-                        Diagnostic::error(
-                            codes::UNKNOWN_MEMBER,
-                            format!("`{rendered}` has no method `{}`", name.name),
-                        )
-                        .with_primary(name.span, "no such method"),
-                    );
+                    let mut diagnostic = Diagnostic::error(
+                        codes::UNKNOWN_MEMBER,
+                        format!("`{rendered}` has no method `{}`", name.name),
+                    )
+                    .with_primary(name.span, "no such method");
+                    // A bound that declares the method is the likeliest reason
+                    // someone wrote this, and saying nothing would look like
+                    // the bound had not been read.
+                    if let Some(interface) = self.bound_declaring(base, &name.name) {
+                        let interface = self.interfaces[interface.0 as usize].name.clone();
+                        diagnostic = diagnostic
+                            .with_note(format!(
+                                "`{rendered}` is bounded by `{interface}`, which does declare it"
+                            ))
+                            .with_help(
+                                "calling a member through a bound needs a witness, which is not \
+                                 implemented yet — RFC 0003",
+                            );
+                    }
+                    self.sink.emit(diagnostic);
                     return self.store.error();
                 }
             }
@@ -2242,9 +2255,39 @@ impl Checker<'_> {
             return self.store.error();
         }
 
+        // Every parameter is known now, so each bound can be asked of what it
+        // actually bound to. A bound is checked at every call, never at the
+        // declaration: the declaration only says what is required.
+        if let Some(def) = info_def(&self.functions[function.0 as usize]) {
+            self.check_bounds(def, &type_params, &bound, expr.span);
+        }
+
         let result = self.store.substitute(result, &bound);
         self.record_type(call.callee.id, result);
         result
+    }
+
+    /// Reports every type argument that does not satisfy its parameter's
+    /// bound.
+    fn check_bounds(
+        &mut self,
+        def: noto_types::DefId,
+        type_params: &[String],
+        bound: &HashMap<(noto_types::DefId, u32), TypeId>,
+        span: Span,
+    ) {
+        for (index, parameter) in type_params.iter().enumerate() {
+            let Some(required) = self.type_param_bounds.get(&(def, index as u32)).cloned() else {
+                continue;
+            };
+            let Some(argument) = bound.get(&(def, index as u32)).copied() else { continue };
+            for interface in required {
+                if self.satisfies(argument, interface) {
+                    continue;
+                }
+                self.report_unsatisfied_bound(parameter, argument, interface, span);
+            }
+        }
     }
 
     /// The enum a receiver expression names, if it names one.
@@ -2662,6 +2705,7 @@ impl Checker<'_> {
                 );
                 return self.store.error();
             }
+            self.check_bounds(def, &type_params, &bound, expr.span);
             self.store.substitute(ty, &bound)
         };
 

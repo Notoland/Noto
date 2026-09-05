@@ -434,6 +434,14 @@ pub struct Analysis {
     pub enums: Vec<EnumInfo>,
     /// Every interface, indexed by [`InterfaceId`].
     pub interfaces: Vec<InterfaceInfo>,
+    /// The bounds declared on each type parameter, keyed by the declaration
+    /// that owns it and its position.
+    ///
+    /// Keyed rather than stored on the function or class because a
+    /// [`Type::Parameter`](noto_types::Type::Parameter) carries exactly that
+    /// pair, so asking "what may this `T` do?" needs nothing else in hand.
+    /// A parameter with no bounds has no entry.
+    pub type_param_bounds: HashMap<(DefId, u32), Vec<InterfaceId>>,
     /// The name of every module, indexed by [`ModuleId`]; the root's is empty.
     pub modules: Vec<String>,
     /// Every test.
@@ -472,6 +480,11 @@ impl Analysis {
     /// Looks an interface up by id.
     pub fn interface(&self, id: InterfaceId) -> &InterfaceInfo {
         &self.interfaces[id.0 as usize]
+    }
+
+    /// The interfaces a type parameter is bounded by, empty when unbounded.
+    pub fn bounds_on(&self, def: DefId, index: u32) -> &[InterfaceId] {
+        self.type_param_bounds.get(&(def, index)).map_or(&[], Vec::as_slice)
     }
 
     /// The enum a type names, if it names one.

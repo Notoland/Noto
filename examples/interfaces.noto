@@ -8,9 +8,11 @@
 // Comparable?" is answered by reading Version's first line. The reasoning, and
 // what is still missing, is in docs/rfcs/0003-interfaces-and-bounds.md.
 //
-// What this file does NOT show, because it does not exist yet: a bound like
-// `fn largest<T: Comparable>(..)`. Until bounds land, an interface is a
-// promise the checker enforces at the declaration and nothing calls through.
+// A bound — `<T: Comparable>` — is that promise attached to a type parameter.
+// It is checked at every call, so a type that does not implement the
+// interface cannot reach the function at all. What a bound does NOT do yet is
+// let the body call through it: that needs a witness, and until it exists a
+// bounded T is still a value you can only move around.
 
 /// Two values of the same type, ordered.
 ///
@@ -39,6 +41,17 @@ export class Buffer(val size: Int): Comparable, Sized {
     export fn compareTo(other: Buffer): Int = size - other.size
 }
 
+/// Only a `Comparable` reaches this. `Circle` would be rejected at the call
+/// with NOTO0413, naming what it would have to implement.
+export fn firstOf<T: Comparable>(xs: [T]): T = xs[0]
+
+/// A bound flows through a generic class the same way: `Holder(Circle(1))`
+/// is rejected at the construction.
+///
+/// It cannot read `item.size` yet — that is the witness, still missing — so
+/// the bound here documents and enforces what may go in, and no more.
+export class Holder<T: Sized>(val item: T)
+
 test "an implementer's method is an ordinary method" {
     val a = Version(1, 4)
     val b = Version(1, 9)
@@ -57,6 +70,18 @@ test "a class can implement two interfaces" {
     assert(small.compareTo(large) < 0)
     // `size` satisfies Sized by being an ordinary field.
     assert(small.size == 8)
+}
+
+test "a bound lets only an implementer through" {
+    // Both of these are `Comparable`, so both reach `firstOf`.
+    assert(firstOf([Version(1, 0), Version(2, 0)]).major == 1)
+    assert(firstOf([Buffer(8), Buffer(16)]).size == 8)
+
+    // firstOf([Circle(1)]) would be NOTO0413: Circle is not Comparable.
+}
+
+test "a bound on a class is checked where it is constructed" {
+    assert(Holder(Buffer(32)).item.size == 32)
 }
 
 test "conformance costs nothing at runtime" {

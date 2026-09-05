@@ -324,8 +324,8 @@ pub mod codes {
     pub const MISSING_INTERFACE_MEMBER: Code = Code(411);
     /// A member meant to implement an interface has the wrong signature.
     pub const INTERFACE_SIGNATURE_MISMATCH: Code = Code(412);
-    // 413 is reserved for an unsatisfied bound at a call, which lands with
-    // bounds themselves; see RFC 0003.
+    /// A type argument that does not satisfy the bound on its parameter.
+    pub const UNSATISFIED_BOUND: Code = Code(413);
     /// An interface named where a value type is expected.
     pub const INTERFACE_NOT_A_VALUE: Code = Code(414);
     /// An `interface` body declares storage an interface cannot have.

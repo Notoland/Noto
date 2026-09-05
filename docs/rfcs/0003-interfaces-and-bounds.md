@@ -415,21 +415,31 @@ diagnostic codes:
   implementing type too; nothing is synthesised
 - `NOTO0414` for an interface named where a value type is expected, and
   `NOTO0415` for a body that tries to store something
+- **bounds** on a generic function or class, checked at every call and every
+  construction with `NOTO0413`. A bound is satisfied through what an interface
+  extends, and a type parameter satisfies a bound its own declaration demanded,
+  which is what lets a bounded function pass its `T` on to another one
 
-This slice needs no lowering and emits no code: with abstract members only, an
-interface declaration compiles to nothing and an implementing class is laid
-out exactly as it was before. `examples/interfaces.noto` builds to a native
-binary and runs.
+Neither slice needs lowering, and that is not an accident — it is the
+constraint they were cut along. With abstract members only, an interface
+declaration compiles to nothing and an implementing class is laid out exactly
+as it was. A bound that only constrains adds nothing to a signature. So
+everything above runs: `examples/interfaces.noto` builds to a native binary.
 
 Not yet landed:
 
-- **bounds** (`<T: Comparable>`), and `NOTO0413` for a type argument that does
-  not satisfy one. Still rejected with `NOTO0500`
-- **witnesses** — no dispatch through a bound exists, so nothing calls an
-  interface member except through the concrete type
-- **default method bodies.** Rejected with `NOTO0500`: reaching one means
-  dispatching through a witness. This is why `has_default` is not yet recorded
-- **built-in conformances for the primitives** (`Int: Comparable`, ...)
+- **witnesses, and member resolution through a bound.** These are one step:
+  `best.compareTo(x)` inside `fn largest<T: Comparable>` is still `NOTO0404`,
+  because making it type check without lowering it would produce a program
+  that passes `noto check` and cannot be built. The diagnostic names the bound
+  and says the witness is what is missing
+- **default method bodies.** Rejected with `NOTO0500` for the same reason —
+  reaching one means dispatching through a witness. This is why `has_default`
+  is not yet recorded on an interface method
+- **built-in conformances for the primitives** (`Int: Comparable`, ...).
+  Without them a bound is useless on the types most programs hold:
+  `firstOf([1, 2, 3])` is `NOTO0413` today, and the diagnostic says why rather
+  than suggesting `class Int(..): Comparable`, which nobody can write
 - **interfaces on an enum.** Still rejected, because an enum cannot have
   methods at all yet
 

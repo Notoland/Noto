@@ -220,12 +220,42 @@ dispatch are a separate decision, not made yet.
 An interface with only abstract members costs nothing: it emits no code, and a
 class that implements one is laid out exactly as it would be without it.
 
-Not implemented: **bounds** (`fn largest<T: Comparable>(..)`), which is what
-would let a generic function call an interface member — see
-[Generics](#generics); generic interfaces (`interface Into<T>`); default
-method bodies; built-in conformances for the primitive types; interfaces on an
-enum. The reasoning and the plan are in
-[RFC 0003](rfcs/0003-interfaces-and-bounds.md).
+### Bounds
+
+A bound attaches an interface to a type parameter:
+
+```noto
+fn firstOf<T: Comparable>(xs: [T]): T = xs[0]
+
+class Holder<T: Sized>(val item: T)
+```
+
+A bound is checked at every call and every construction, never at the
+declaration — the declaration only says what is required:
+
+```noto
+firstOf([Version(1, 0), Version(2, 0)])   // fine
+firstOf([Circle(1)])                      // NOTO0413: Circle is not Comparable
+```
+
+A bound is satisfied through what an interface extends, so a `T: Ordered` may
+be passed where a `U: Comparable` is wanted. `<T: A + B>` requires both.
+
+A bound **constrains** which types may be used; it does not yet let the body
+call through it. Inside `firstOf`, `xs[0].compareTo(..)` is still an unknown
+member, because reaching an interface member on a `T` means dispatching
+through a witness — a pointer to the concrete type's implementations, passed
+alongside the arguments — and that is not implemented. The diagnostic says so
+rather than pretending the bound was not read.
+
+The primitive types satisfy no bound yet: `firstOf([1, 2, 3])` is an error.
+`Int` cannot be opened to add a conformance, so this waits on a fixed,
+compiler-known table.
+
+Not implemented: witnesses and member calls through a bound; generic
+interfaces (`interface Into<T>`); default method bodies; built-in conformances
+for the primitive types; interfaces on an enum. The reasoning and the plan are
+in [RFC 0003](rfcs/0003-interfaces-and-bounds.md).
 
 ## Enums
 
@@ -346,9 +376,10 @@ argument cannot be inferred and is an error naming it.
 A `T` has no members, no operators and no literals: you may bind it, pass it,
 return it and store it, and nothing else. That is not a rule of its own — `T`
 is not `Int`, so `+` does not apply, and it declares no fields, so `.x` does
-not resolve. Bounds — `fn largest<T: Comparable>(..)` — are what would lift
-it. [Interfaces](#interfaces) now exist; bounds do not, so a `T` is still a
-value you can only move around.
+not resolve. [Bounds](#bounds) are what will lift it. They are declared and
+enforced today — a `<T: Comparable>` accepts only implementers — but they do
+not yet dispatch, so inside the body a bounded `T` is still a value you can
+only move around.
 
 A class is generic the same way, and its parameters are in scope for its
 fields and methods:

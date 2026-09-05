@@ -181,6 +181,8 @@ struct Checker<'sink> {
     classes: Vec<ClassInfo>,
     enums: Vec<EnumInfo>,
     interfaces: Vec<InterfaceInfo>,
+    /// The bounds on every type parameter declared anywhere in the program.
+    type_param_bounds: HashMap<(noto_types::DefId, u32), Vec<InterfaceId>>,
     tests: Vec<TestInfo>,
     /// The module whose declarations are being collected or checked.
     current_module: ModuleId,
@@ -237,6 +239,7 @@ impl<'sink> Checker<'sink> {
             classes: Vec::new(),
             enums: Vec::new(),
             interfaces: Vec::new(),
+            type_param_bounds: HashMap::new(),
             tests: Vec::new(),
             current_module: ModuleId::ROOT,
             modules: vec![String::new()],
@@ -264,6 +267,7 @@ impl<'sink> Checker<'sink> {
             classes: self.classes,
             enums: self.enums,
             interfaces: self.interfaces,
+            type_param_bounds: self.type_param_bounds,
             modules: self.modules,
             tests: self.tests,
             entry: self.entry,

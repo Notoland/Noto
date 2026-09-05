@@ -394,6 +394,167 @@ impl Checker<'_> {
         self.interfaces[index].methods = methods;
     }
 
+    /// Records what each of a declaration's type parameters is bounded by.
+    ///
+    /// Keyed by `(def, index)` rather than hung off the function or class,
+    /// because that pair is exactly what a `Type::Parameter` carries: asking
+    /// what a `T` may do needs the type and nothing else.
+    pub(crate) fn record_bounds(
+        &mut self,
+        def: Option<noto_types::DefId>,
+        params: &[noto_ast::TypeParam],
+    ) {
+        let Some(def) = def else { return };
+        for (index, parameter) in params.iter().enumerate() {
+            let mut bounds: Vec<crate::analysis::InterfaceId> = Vec::new();
+            for bound in &parameter.bounds {
+                let Some(id) = self.resolve_interface(bound) else { continue };
+                if bounds.contains(&id) {
+                    let name = self.interfaces[id.0 as usize].name.clone();
+                    self.sink.emit(
+                        Diagnostic::error(
+                            codes::DUPLICATE_NAME,
+                            format!("`{name}` is named twice as a bound"),
+                        )
+                        .with_primary(bound.span, "already required here"),
+                    );
+                    continue;
+                }
+                bounds.push(id);
+            }
+            if !bounds.is_empty() {
+                self.type_param_bounds.insert((def, index as u32), bounds);
+            }
+        }
+    }
+
+    /// Whether `ty` satisfies `interface`.
+    ///
+    /// Conformance is nominal, so this is a lookup rather than a comparison of
+    /// members. A type parameter satisfies a bound its own declaration
+    /// demanded, which is what lets a bounded function pass its `T` on to
+    /// another one. Both walk `extends`, so a `T: Ordered` satisfies
+    /// `Comparable`.
+    pub(crate) fn satisfies(
+        &self,
+        ty: TypeId,
+        interface: crate::analysis::InterfaceId,
+    ) -> bool {
+        let declared: &[crate::analysis::InterfaceId] = match self.store.get(ty) {
+            // One mistake produces one diagnostic: an error type satisfies
+            // anything rather than reporting a second time.
+            Type::Error => return true,
+            Type::Named { .. } => match self.class_of(ty) {
+                Some((_, class)) => &class.interfaces,
+                None => return false,
+            },
+            Type::Parameter { def, index, .. } => {
+                match self.type_param_bounds.get(&(*def, *index)) {
+                    Some(bounds) => bounds,
+                    None => return false,
+                }
+            }
+            _ => return false,
+        };
+
+        let mut queue: Vec<crate::analysis::InterfaceId> = declared.to_vec();
+        let mut seen: Vec<crate::analysis::InterfaceId> = Vec::new();
+        while let Some(id) = queue.pop() {
+            if id == interface {
+                return true;
+            }
+            if seen.contains(&id) {
+                continue;
+            }
+            seen.push(id);
+            queue.extend_from_slice(&self.interfaces[id.0 as usize].extends);
+        }
+        false
+    }
+
+    /// The bound on `ty` that declares a member called `name`, if one does.
+    ///
+    /// Only for diagnostics: nothing dispatches through a bound yet, so this
+    /// is how an "unknown member" on a bounded parameter says why the bound
+    /// did not help.
+    pub(crate) fn bound_declaring(
+        &self,
+        ty: TypeId,
+        name: &str,
+    ) -> Option<crate::analysis::InterfaceId> {
+        let Type::Parameter { def, index, .. } = self.store.get(ty) else { return None };
+        let declared = self.type_param_bounds.get(&(*def, *index))?;
+
+        let mut queue: Vec<crate::analysis::InterfaceId> = declared.clone();
+        let mut seen: Vec<crate::analysis::InterfaceId> = Vec::new();
+        while let Some(id) = queue.pop() {
+            if seen.contains(&id) {
+                continue;
+            }
+            seen.push(id);
+            let interface = &self.interfaces[id.0 as usize];
+            if interface.method(name).is_some() || interface.property(name).is_some() {
+                return Some(id);
+            }
+            queue.extend_from_slice(&interface.extends);
+        }
+        None
+    }
+
+    /// Reports a type argument that does not satisfy the bound on it.
+    pub(crate) fn report_unsatisfied_bound(
+        &mut self,
+        parameter: &str,
+        argument: TypeId,
+        interface: crate::analysis::InterfaceId,
+        span: Span,
+    ) {
+        let required = &self.interfaces[interface.0 as usize];
+        let (name, declared_at) = (required.name.clone(), required.span);
+        let members: Vec<String> = required
+            .methods
+            .iter()
+            .map(|method| method.name.clone())
+            .chain(required.properties.iter().map(|property| property.name.clone()))
+            .collect();
+        let rendered = self.store.render(argument);
+
+        let mut diagnostic = Diagnostic::error(
+            codes::UNSATISFIED_BOUND,
+            format!("`{rendered}` does not implement `{name}`"),
+        )
+        .with_primary(span, format!("`{parameter}` is `{rendered}` here"))
+        .with_secondary(declared_at, format!("`{name}` is declared here"));
+
+        // What to suggest depends on whether the user can open the type at
+        // all. Telling someone to write `class Int(..): Comparable` would be
+        // advice they cannot take.
+        diagnostic = if self.class_of(argument).is_some() {
+            let members: Vec<String> =
+                members.iter().map(|member| format!("`{member}`")).collect();
+            if members.is_empty() {
+                diagnostic.with_help(format!("declare `class {rendered}(..): {name}`"))
+            } else {
+                diagnostic.with_help(format!(
+                    "declare `class {rendered}(..): {name}` and give it {}",
+                    members.join(", ")
+                ))
+            }
+        } else if self.enum_of(argument).is_some() {
+            diagnostic
+                .with_note("an enum cannot implement an interface yet")
+        } else {
+            diagnostic
+                .with_note(format!(
+                    "`{rendered}` is built in, and cannot be opened to add a conformance"
+                ))
+                .with_help(
+                    "the conformances of the built-in types are not implemented yet — RFC 0003",
+                )
+        };
+        self.sink.emit(diagnostic);
+    }
+
     /// Resolves a supertype list entry to the interface it names.
     ///
     /// Reports the two ways it can fail — naming nothing, and naming a class
@@ -468,14 +629,6 @@ impl Checker<'_> {
     /// would mean giving them reference semantics under a keyword that says
     /// otherwise, so they wait for the memory model in RFC 0001.
     fn declare_class(&mut self, item: &Item, decl: &TypeDeclItem) {
-        let unsupported = |what: &str, span| {
-            Diagnostic::error(
-                codes::UNSUPPORTED_CONSTRUCT,
-                format!("{what} are not supported by this compiler yet"),
-            )
-            .with_primary(span, "not implemented in Noto 0.14")
-        };
-
         if decl.class_kind != ClassKind::Class {
             self.sink.emit(
                 Diagnostic::error(
@@ -488,18 +641,12 @@ impl Checker<'_> {
             );
             return;
         }
-        for parameter in &decl.type_params {
-            if let Some(bound) = parameter.bounds.first() {
-                self.sink.emit(
-                    unsupported("bounds on a type parameter", bound.span)
-                        .with_note("a type parameter permits only moving the value around"),
-                );
-            }
-        }
-        // The supertype list is not resolved here. The grammar cannot tell a
-        // base class from an interface — it parks the first entry in `base`
-        // and the rest in `interfaces` — so which of the two a name is only
-        // becomes knowable once every declaration is registered.
+        // Neither the bounds nor the supertype list are resolved here: both
+        // name interfaces, and an interface declared further down the file is
+        // not registered yet. The grammar cannot tell a base class from an
+        // interface either — it parks the first supertype in `base` and the
+        // rest in `interfaces` — so which of the two a name is only becomes
+        // knowable once every declaration exists.
 
         let name = decl.name.name.clone();
         if let Some(existing) = self.own_type(&name) {
@@ -572,6 +719,7 @@ impl Checker<'_> {
             (!type_params.is_empty()).then_some(def),
             &type_params,
         );
+        self.record_bounds((!type_params.is_empty()).then_some(def), &decl.type_params);
 
         let mut fields: Vec<FieldInfo> = Vec::new();
         for param in &decl.primary_params {
@@ -1351,19 +1499,6 @@ impl Checker<'_> {
             );
             return;
         }
-        for parameter in &function.type_params {
-            if let Some(bound) = parameter.bounds.first() {
-                self.sink.emit(
-                    Diagnostic::error(
-                        codes::UNSUPPORTED_CONSTRUCT,
-                        "bounds on a type parameter are not supported by this compiler yet",
-                    )
-                    .with_primary(bound.span, "not implemented in Noto 0.14")
-                    .with_note("a type parameter permits only moving the value around"),
-                );
-            }
-        }
-
         let name = function.name.name.clone();
         if let Some(existing) = self.lookup_function(&name) {
             let previous = self.functions[existing.0 as usize].span;
@@ -1384,6 +1519,7 @@ impl Checker<'_> {
         // The type parameters are in scope for the signature and, later, for
         // the body: a `T` in a result type is the same `T` a local declares.
         let (def, type_params) = self.declare_type_params(&name, &function.type_params);
+        self.record_bounds(def, &function.type_params);
         let result = match &function.result {
             Some(ty) => self.resolve_type(ty),
             None => self.store.unit(),

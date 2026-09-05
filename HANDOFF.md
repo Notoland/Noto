@@ -5,7 +5,7 @@ human or agent. Read this before touching anything.
 
 **Where the project stands:** the compiler is real and works end to end. A
 `.noto` file becomes a static native ELF executable with no LLVM, no libc and
-no external toolchain. 565 tests pass, 0 fail, no warnings. The whole tool
+no external toolchain. 578 tests pass, 0 fail, no warnings. The whole tool
 set — `run`, `build`, `check`, `test`, `lint`, `fmt` — is implemented, and so
 is enough of the language to write real programs in it: `examples/wc.noto` is
 a `wc` that prints the same numbers as the system one.
@@ -74,7 +74,7 @@ noto/
 │   ├── ast/          noto-ast          syntax tree + visitor                  3 tests
 │   ├── parser/       noto-parser       recursive descent + precedence        60 tests
 │   ├── types/        noto-types        types, interning, unification         19 tests
-│   ├── semantic/     noto-semantic     name resolution + type checking      219 tests
+│   ├── semantic/     noto-semantic     name resolution + type checking      232 tests
 │   ├── ir/           noto-ir           Noto IR + textual form                11 tests
 │   ├── lower/        noto-lower        AST -> Noto IR                        62 tests
 │   ├── optimizer/    noto-optimizer    IR passes                              4 tests
@@ -169,8 +169,15 @@ fn main() {
   checked once at the class with `Self` read as the implementing type.
   Conformance is nominal, declared at the type, and costs nothing at runtime —
   an interface with only abstract members emits no code, so an implementing
-  class is laid out exactly as it was. Bounds, witnesses and default bodies
-  are **not** here yet; see RFC 0003's implementation status
+  class is laid out exactly as it was
+- bounds — `fn firstOf<T: Comparable>(xs: [T]): T`, `class Holder<T: Sized>` —
+  checked at **every call and construction**, never at the declaration, with
+  `NOTO0413` naming what the argument would have to implement. A bound is
+  satisfied through what an interface extends, so a `T: Ordered` may be passed
+  where a `U: Comparable` is wanted. What a bound does **not** do yet is let
+  the body call through it: that needs the witness, so `x.compareTo(y)` on a
+  bounded `T` is still `NOTO0404` — and the message says the bound is why it
+  looked. Witnesses and default bodies are **not** here; see RFC 0003
 - inside a method a bare name is the receiver's member, and `p?.x` reads a
   field or property through a nullable receiver, producing a nullable result
 - lambdas: a value of type `fn(A): B`, capturing by value into a closure of
@@ -207,8 +214,9 @@ in Noto 0.14`. Nothing is silently accepted and miscompiled.
 | `struct` / `data class` / `data struct` | `compiler/semantic/src/collect.rs` `declare_class` | value semantics need RFC 0001; `class` works |
 | class inheritance, defaults on constructor parameters | `collect.rs` `resolve_interface`, `declare_class` | fields, methods, properties and interfaces work |
 | generic interfaces, default method bodies | `collect.rs` `declare_interface`, `collect_interface` | abstract requirements work; see RFC 0003 |
+| calling a member through a bound | `check.rs` `check_method_call` | needs the witness; the bound itself is enforced |
 | explicit enum case values (`Red = 1`), methods on an enum, interfaces on one | `collect.rs` `declare_enum` | enums otherwise work, data included |
-| generic enums, bounds, explicit type arguments | `collect.rs` `declare_enum`, `collect_fn`, `check_call` | generic functions and classes work |
+| generic enums, explicit type arguments | `collect.rs` `declare_enum`, `check_call` | generic functions, classes and bounds work |
 | extension functions | `collect.rs` `collect_fn` | receiver resolution missing |
 | floats | `compiler/lower/src/expr.rs` `lower_literal` | needs SSE registers in the backend |
 | `defer` | `compiler/lower/src/stmt.rs` `lower_stmt` | needs scope-exit tracking |
@@ -237,25 +245,29 @@ them goes: [RFC 0003](docs/rfcs/0003-interfaces-and-bounds.md) settled the
 semantics (nominal, declared at the type, erased) and the checker enforces
 them. `examples/interfaces.noto` builds and runs.
 
-**Bounds have not**, and they are the half that unblocks the rest. Nobody can
-write a `Map<K, V>` today, because comparing two `K` values needs `==` on a
-type parameter and a bare `T` permits only moving the value.
-`fn largest<T: Comparable>(..)` is still rejected in `collect_fn`.
+**Bounds are declared and enforced**, but they do not dispatch. `<T:
+Comparable>` is checked at every call and construction, so nothing that fails
+to implement the interface can reach the function — but the body still cannot
+call `compareTo` on its `T`, because there is nothing to call through.
+
+That last step is what unblocks the rest. Nobody can write a `Map<K, V>`
+today, because comparing two `K` values needs a call on a type parameter.
 
 The order the remaining work wants to go in:
 
-1. **Bounds in the checker.** `<T: Comparable>` makes the bound's members
-   resolve on a `T`, and a type argument that does not satisfy one is
-   `NOTO0413` at the call. No code generation yet.
-2. **Witnesses.** A bounded generic function takes one hidden pointer per
-   bound — a static table of the concrete type's implementations. This is the
-   first argument in the language that is not in the source signature, and the
-   first thing generics do that is not free.
-3. **Bounded generic classes.** The witness becomes a hidden field, written at
-   construction.
-4. **Default method bodies**, which are what step 2 makes reachable, and the
-   built-in conformance table for the primitives (`Int: Comparable`, ...) that
-   makes a bound useful on day one.
+1. **Witnesses, with member resolution through the bound.** These are one
+   step, not two: making `best.compareTo(x)` type check without also lowering
+   it would mean a program that passes `noto check` and cannot be built. A
+   bounded generic function takes one hidden pointer per bound — a static
+   table of the concrete type's implementations. This is the first argument in
+   the language that is not in the source signature, and the first thing
+   generics do that is not free.
+2. **Bounded generic classes.** The witness becomes a hidden field, written at
+   construction from the call-site witness.
+3. **Default method bodies**, which are what step 1 makes reachable, and the
+   built-in conformance table for the primitives (`Int: Comparable`, ...)
+   without which a bound is useless on the types most programs actually hold —
+   `firstOf([1, 2, 3])` is `NOTO0413` today.
 
 RFC 0003's "Still unresolved" section lists what is not decided yet — witness
 representation, whether the compiler knows `Eq`/`Ord` by name, and whether a
@@ -377,7 +389,7 @@ RFC.
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
-cargo test --workspace          # 565 tests, must stay at 0 failures
+cargo test --workspace          # 578 tests, must stay at 0 failures
 cargo build --workspace         # must stay at 0 warnings
 
 # The Rust tests are half the suite. Every .noto file carries its own, and a
