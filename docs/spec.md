@@ -1,9 +1,9 @@
-# The Noto language specification — 0.12
+# The Noto language specification — 0.13
 
 The language as implemented, section by section. Everything marked **not
 implemented** parses (the parser covers the full grammar) but is rejected
 during semantic analysis or lowering with `NOTO0500 … not implemented in
-Noto 0.12`. Nothing is silently accepted and miscompiled.
+Noto 0.13`. Nothing is silently accepted and miscompiled.
 
 This document describes behaviour; syntax details that deserve their own
 rationale live in [design/](design/).
@@ -148,6 +148,20 @@ assigning calls its `set`, and nothing is stored. The value being assigned
 arrives in the setter under the name `value`. A `val` property may not have a
 setter, and a property with custom accessors may not also have an initialiser:
 that value could only be reached through storage the accessors cannot name.
+
+A null check narrows what it proves. Inside the branch it guards, and after
+a guard clause that leaves the block, a `T?` is a `T`:
+
+```noto
+fn size(text: String?): Int {
+    if text == null { return 0 }
+    return text.length          // a `String` here, not a `String?`
+}
+```
+
+It reads one shape — `x == null` and `x != null`, either way round — and says
+nothing about any other condition. A branch that can fall through proves
+nothing after it, and what a branch proved ends with the branch.
 
 Reading a member of something nullable takes `?.`, which produces a nullable
 result: `p?.x` is an `Int?` when `p` is a `Point?`, and null when `p` is. On

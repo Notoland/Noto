@@ -42,7 +42,7 @@ impl Checker<'_> {
                 codes::UNSUPPORTED_CONSTRUCT,
                 format!("{what} are not supported by this compiler yet"),
             )
-            .with_primary(span, "not implemented in Noto 0.12")
+            .with_primary(span, "not implemented in Noto 0.13")
         };
 
         if let Some(param) = decl.type_params.first() {
@@ -167,7 +167,7 @@ impl Checker<'_> {
                 codes::UNSUPPORTED_CONSTRUCT,
                 format!("{what} are not supported by this compiler yet"),
             )
-            .with_primary(span, "not implemented in Noto 0.12")
+            .with_primary(span, "not implemented in Noto 0.13")
         };
 
         if decl.class_kind != ClassKind::Class {
@@ -176,7 +176,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     format!("`{}` declarations are not supported by this compiler yet", decl.class_kind.as_str()),
                 )
-                .with_primary(item.span, "not implemented in Noto 0.12")
+                .with_primary(item.span, "not implemented in Noto 0.13")
                 .with_note("a value type is copied on assignment, which needs the memory model")
                 .with_help("declare it as a `class` for now: an object is a reference"),
             );
@@ -247,7 +247,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "default values for constructor parameters are not supported by this compiler yet",
                     )
-                    .with_primary(default.span, "not implemented in Noto 0.12"),
+                    .with_primary(default.span, "not implemented in Noto 0.13"),
                 );
             }
 
@@ -662,7 +662,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "generic methods are not supported by this compiler yet",
                 )
-                .with_primary(function.type_params[0].span, "not implemented in Noto 0.12"),
+                .with_primary(function.type_params[0].span, "not implemented in Noto 0.13"),
             );
             return;
         }
@@ -765,7 +765,7 @@ impl Checker<'_> {
                             codes::UNSUPPORTED_CONSTRUCT,
                             "default values for case data are not supported by this compiler yet",
                         )
-                        .with_primary(default.span, "not implemented in Noto 0.12"),
+                        .with_primary(default.span, "not implemented in Noto 0.13"),
                     );
                 }
                 let ty = match &field.ty {
@@ -816,7 +816,7 @@ impl Checker<'_> {
                 codes::UNSUPPORTED_CONSTRUCT,
                 format!("`{name}` declarations are not supported by this compiler yet"),
             )
-            .with_primary(item.span, "not implemented in Noto 0.12")
+            .with_primary(item.span, "not implemented in Noto 0.13")
             .with_note(
                 "the syntax is accepted so that tooling can read the whole language; \
                  code generation for it lands in a later release",
@@ -831,7 +831,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "extension functions are not supported by this compiler yet",
                 )
-                .with_primary(receiver.span, "not implemented in Noto 0.12"),
+                .with_primary(receiver.span, "not implemented in Noto 0.13"),
             );
             return;
         }
@@ -842,7 +842,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "bounds on a type parameter are not supported by this compiler yet",
                     )
-                    .with_primary(bound.span, "not implemented in Noto 0.12")
+                    .with_primary(bound.span, "not implemented in Noto 0.13")
                     .with_note("a type parameter permits only moving the value around"),
                 );
             }
@@ -956,7 +956,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "`main` cannot be `async` in this compiler yet",
                 )
-                .with_primary(span, "not implemented in Noto 0.12"),
+                .with_primary(span, "not implemented in Noto 0.13"),
             );
         }
     }
@@ -1190,7 +1190,7 @@ impl Checker<'_> {
                             codes::UNSUPPORTED_CONSTRUCT,
                             "generic types are not supported by this compiler yet",
                         )
-                        .with_primary(ty.span, "not implemented in Noto 0.12")
+                        .with_primary(ty.span, "not implemented in Noto 0.13")
                         .with_note("generic functions are; generic classes are not"),
                     );
                     return self.store.error();

@@ -173,6 +173,11 @@ struct Checker<'sink> {
     imports: Vec<Vec<Import>>,
     /// Each module's own top-level value names.
     module_names: Vec<HashMap<String, Resolution>>,
+    /// Locals a null check has proved cannot be null right here.
+    ///
+    /// A stack, because narrowing lasts exactly as long as the branch that
+    /// proved it: leaving the branch pops what it learned.
+    narrowed: Vec<HashMap<LocalId, TypeId>>,
     /// The type parameters of the declaration being collected or checked.
     ///
     /// A stack because a lambda inside a generic function still sees them.
@@ -216,6 +221,7 @@ impl<'sink> Checker<'sink> {
             module_types: vec![HashMap::new()],
             module_enums: vec![HashMap::new()],
             type_scope: Vec::new(),
+            narrowed: Vec::new(),
             exported: vec![HashSet::new()],
             entry: None,
             current_function: None,
@@ -358,6 +364,12 @@ impl<'sink> Checker<'sink> {
             .iter()
             .position(|item| item.def == def)
             .map(|index| (EnumId(index as u32), &self.enums[index]))
+    }
+
+    /// What a local has been narrowed to, if a check proved something about
+    /// it.
+    fn narrowed_type(&self, local: LocalId) -> Option<TypeId> {
+        self.narrowed.iter().rev().find_map(|frame| frame.get(&local).copied())
     }
 
     /// The class a type names, if it names one.

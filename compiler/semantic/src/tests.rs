@@ -996,6 +996,60 @@ fn the_command_line_is_a_list_of_strings() {
     );
 }
 
+// --- narrowing -----------------------------------------------------------------
+
+#[test]
+fn a_null_check_proves_something_in_the_branch_it_guards() {
+    check_ok(
+        "class Point(val x: Int)\n         fn f(p: Point?): Int {\n    if p != null {\n        return p.x\n    }\n    return 0\n}\n         fn main() { println(f(null)) }\n",
+    );
+}
+
+#[test]
+fn the_other_branch_of_an_equality_check_learns_it_too() {
+    check_ok(
+        "class Point(val x: Int)\n         fn f(p: Point?): Int {\n    if p == null {\n        return 0\n    } else {\n        return p.x\n    }\n}\n         fn main() { println(f(null)) }\n",
+    );
+}
+
+#[test]
+fn a_guard_clause_proves_it_for_everything_after() {
+    check_ok(
+        "fn size(text: String?): Int {\n    if text == null { return 0 }\n    return text.length\n}\n         fn main() { println(size(null)) }\n",
+    );
+}
+
+#[test]
+fn a_branch_that_can_fall_through_proves_nothing_after_it() {
+    check_error(
+        "fn size(text: String?): Int {\n    if text == null { println(\"none\") }\n    return text.length\n}\n         fn main() {}\n",
+        "cannot be read from a `String?`",
+    );
+}
+
+#[test]
+fn narrowing_ends_with_the_branch_that_proved_it() {
+    check_error(
+        "class Point(val x: Int)\n         fn f(p: Point?): Int {\n    if p != null {\n        println(p.x)\n    }\n    return p.x\n}\n         fn main() {}\n",
+        "cannot be read from a `Point?`",
+    );
+}
+
+#[test]
+fn a_condition_that_is_not_a_null_check_proves_nothing() {
+    check_error(
+        "fn size(text: String?, ok: Bool): Int {\n    if ok { return text.length }\n    return 0\n}\n         fn main() {}\n",
+        "cannot be read from a `String?`",
+    );
+}
+
+#[test]
+fn null_on_either_side_reads_the_same() {
+    check_ok(
+        "fn size(text: String?): Int {\n    if null != text { return text.length }\n    return 0\n}\n         fn main() { println(size(null)) }\n",
+    );
+}
+
 // --- generics ------------------------------------------------------------------
 
 #[test]

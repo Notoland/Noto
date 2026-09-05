@@ -1,6 +1,6 @@
 //! The second pass: checking bodies against collected signatures.
 
-use crate::analysis::{FunctionId, Resolution};
+use crate::analysis::{FunctionId, LocalId, Resolution};
 use crate::{builtins, Checker};
 use noto_ast::{
     BinaryOp, Block, Expr, ExprKind, ItemKind, LetKind, Literal, Module, Pattern, PatternKind,
@@ -9,6 +9,7 @@ use noto_ast::{
 use noto_diagnostics::{codes, Diagnostic};
 use noto_span::Span;
 use noto_types::{Primitive, Type, TypeId};
+use std::collections::HashMap;
 
 impl Checker<'_> {
     /// Checks the body of every declaration.
@@ -214,6 +215,9 @@ impl Checker<'_> {
     fn check_statements(&mut self, statements: &[Stmt], span: Span) -> TypeId {
         let mut result = self.store.unit();
         let mut unreachable_from: Option<Span> = None;
+        // A guard clause proves something for everything after it, and only
+        // until the block it stands in ends.
+        let mut guards = 0usize;
 
         for (index, stmt) in statements.iter().enumerate() {
             if let Some(cause) = unreachable_from {
@@ -226,6 +230,10 @@ impl Checker<'_> {
             }
 
             let ty = self.check_stmt(stmt);
+            if let Some(frame) = self.guard_narrowing(stmt) {
+                self.narrowed.push(frame);
+                guards += 1;
+            }
             let is_last = index + 1 == statements.len();
 
             if self.store.get(ty).is_never() && !is_last {
@@ -236,8 +244,35 @@ impl Checker<'_> {
             }
         }
 
+        for _ in 0..guards {
+            self.narrowed.pop();
+        }
+
         let _ = span;
         result
+    }
+
+    /// What an `if` that leaves the block proves for the statements after it.
+    ///
+    /// `if x == null { return }` is the shape, and every language that reads
+    /// well has it. It only counts when the branch cannot fall through —
+    /// otherwise the code after it is reachable with `x` still null.
+    fn guard_narrowing(&mut self, stmt: &Stmt) -> Option<HashMap<LocalId, TypeId>> {
+        let StmtKind::Expr(expr) = &stmt.kind else { return None };
+        let ExprKind::If { condition, then_branch, else_branch: None } = &expr.kind else {
+            return None;
+        };
+
+        let branch_ty = self.types.get(&then_branch.id).copied()?;
+        if !self.store.get(branch_ty).is_never() {
+            return None;
+        }
+
+        let (_, when_false) = self.null_check(condition);
+        if when_false.is_empty() {
+            return None;
+        }
+        Some(when_false)
     }
 
     /// Checks a statement and returns the type it contributes when it is the
@@ -276,7 +311,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "declarations inside a function body are not supported yet",
                     )
-                    .with_primary(stmt.span, "not implemented in Noto 0.12")
+                    .with_primary(stmt.span, "not implemented in Noto 0.13")
                     .with_help("move the declaration to the top level of the file"),
                 );
                 self.store.unit()
@@ -360,7 +395,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this pattern is not supported in a binding yet",
                     )
-                    .with_primary(pattern.span, "not implemented in Noto 0.12")
+                    .with_primary(pattern.span, "not implemented in Noto 0.13")
                     .with_help("bind a name, a tuple of names, or `_`"),
                 );
             }
@@ -387,7 +422,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         format!("cannot iterate over a `{rendered}` yet"),
                     )
-                    .with_primary(iterable.span, "not iterable in Noto 0.12")
+                    .with_primary(iterable.span, "not iterable in Noto 0.13")
                     .with_help("iterate over a range, as in `for i in 0..10`"),
                 );
                 self.store.error()
@@ -458,7 +493,7 @@ impl Checker<'_> {
                     let ty = self.check_expr_expecting(bound, int);
                     self.expect_assignable(ty, int, bound.span, None);
                 }
-                // Ranges exist only inside `for` and `when` in Noto 0.12; there
+                // Ranges exist only inside `for` and `when` in Noto 0.13; there
                 // is no first-class `Range` type to give them yet.
                 self.store.unit()
             }
@@ -479,7 +514,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this expression is not supported by this compiler yet",
                     )
-                    .with_primary(expr.span, "not implemented in Noto 0.12"),
+                    .with_primary(expr.span, "not implemented in Noto 0.13"),
                 );
                 self.store.error()
             }
@@ -495,7 +530,9 @@ impl Checker<'_> {
             Some(Resolution::Local(local)) => {
                 self.record_resolution(expr.id, Resolution::Local(local));
                 self.note_capture(local);
-                self.locals[local.0 as usize].ty
+                // A check may have proved it cannot be null here.
+                self.narrowed_type(local)
+                    .unwrap_or(self.locals[local.0 as usize].ty)
             }
             _ => {
                 self.sink.emit(
@@ -581,7 +618,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "an async lambda is not supported by this compiler yet",
                 )
-                .with_primary(expr.span, "not implemented in Noto 0.12"),
+                .with_primary(expr.span, "not implemented in Noto 0.13"),
             );
             return self.store.error();
         }
@@ -1008,7 +1045,9 @@ impl Checker<'_> {
             Some(Resolution::Local(local)) => {
                 self.record_resolution(expr.id, Resolution::Local(local));
                 self.note_capture(local);
-                self.locals[local.0 as usize].ty
+                // A check may have proved it cannot be null here.
+                self.narrowed_type(local)
+                    .unwrap_or(self.locals[local.0 as usize].ty)
             }
             Some(Resolution::Const(id)) => {
                 self.record_resolution(expr.id, Resolution::Const(id));
@@ -1217,7 +1256,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "`in` is not supported outside a `when` arm yet",
                     )
-                    .with_primary(span, "not implemented in Noto 0.12"),
+                    .with_primary(span, "not implemented in Noto 0.13"),
                 );
                 bool_ty
             }
@@ -1484,14 +1523,23 @@ impl Checker<'_> {
         span: Span,
     ) -> TypeId {
         self.check_condition(condition);
+
+        // `x != null` proves something inside the branch it guards, and
+        // `x == null` proves it in the other one.
+        let (when_true, when_false) = self.null_check(condition);
+
+        self.narrowed.push(when_true);
         let then_ty = self.check_block(then_branch);
+        self.narrowed.pop();
 
         let Some(else_branch) = else_branch else {
             // Without an `else` the `if` may not run at all, so it has no value
             // to offer.
             return self.store.unit();
         };
+        self.narrowed.push(when_false);
         let else_ty = self.check_expr(else_branch);
+        self.narrowed.pop();
 
         match self.store.join(then_ty, else_ty) {
             Some(ty) => ty,
@@ -1625,6 +1673,50 @@ impl Checker<'_> {
         )
     }
 
+    /// Reads `x == null` and `x != null` out of a condition.
+    ///
+    /// Returns what each branch may assume: the first map holds while the
+    /// condition is true, the second while it is false. Anything else in a
+    /// condition proves nothing, which is what makes this safe rather than
+    /// clever — it recognises one shape and says nothing about the rest.
+    fn null_check(
+        &mut self,
+        condition: &Expr,
+    ) -> (HashMap<LocalId, TypeId>, HashMap<LocalId, TypeId>) {
+        let empty = (HashMap::new(), HashMap::new());
+        let ExprKind::Binary { op, left, right, .. } = &condition.kind else { return empty };
+        if !matches!(op, BinaryOp::Eq | BinaryOp::Ne) {
+            return empty;
+        }
+
+        // `x == null` and `null == x` say the same thing.
+        let (subject, other) = match (&left.kind, &right.kind) {
+            (_, ExprKind::Literal(Literal::Null)) => (left, right),
+            (ExprKind::Literal(Literal::Null), _) => (right, left),
+            _ => return empty,
+        };
+        let _ = other;
+
+        let Some(Resolution::Local(local)) = self.resolutions.get(&subject.id).copied() else {
+            return empty;
+        };
+        let declared = self.locals[local.0 as usize].ty;
+        if !self.store.is_nullable(declared) {
+            return empty;
+        }
+        let narrowed = self.store.unwrap_nullable(declared);
+
+        let is_null = HashMap::new();
+        let mut is_not_null = HashMap::new();
+        is_not_null.insert(local, narrowed);
+
+        match op {
+            // `x == null`: the false branch is where it is a value.
+            BinaryOp::Eq => (is_null, is_not_null),
+            _ => (is_not_null, is_null),
+        }
+    }
+
     /// Checks a pattern against the type it will be matched against.
     fn check_pattern(&mut self, pattern: &Pattern, expected: TypeId) {
         match &pattern.kind {
@@ -1667,7 +1759,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this pattern is not supported by this compiler yet",
                     )
-                    .with_primary(pattern.span, "not implemented in Noto 0.12"),
+                    .with_primary(pattern.span, "not implemented in Noto 0.13"),
                 );
             }
         }
@@ -1827,7 +1919,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "explicit type arguments are not supported by this compiler yet",
                 )
-                .with_primary(expr.span, "not implemented in Noto 0.12"),
+                .with_primary(expr.span, "not implemented in Noto 0.13"),
             );
         }
 
@@ -1838,7 +1930,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "named arguments are not supported by this compiler yet",
                     )
-                    .with_primary(name.span, "not implemented in Noto 0.12")
+                    .with_primary(name.span, "not implemented in Noto 0.13")
                     .with_help("pass the arguments positionally"),
                 );
             }
@@ -1918,7 +2010,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "safe calls are not supported by this compiler yet",
                     )
-                    .with_primary(expr.span, "not implemented in Noto 0.12"),
+                    .with_primary(expr.span, "not implemented in Noto 0.13"),
                 );
                 return self.store.error();
             }
