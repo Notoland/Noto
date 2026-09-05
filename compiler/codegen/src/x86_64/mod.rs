@@ -43,6 +43,9 @@ pub fn compile(program: &Program, target: Target) -> Result<Vec<u8>, CodegenErro
     let mut rodata = Vec::new();
     let runtime_data = runtime::append_data(&mut rodata);
     let string_offsets = append_strings(&mut rodata, program);
+    // Reserved now, filled in after the code is laid out: a witness table
+    // holds code addresses, which nothing knows until every function has one.
+    let witness_offsets = reserve_witnesses(&mut rodata, program);
 
     let runtime_labels = runtime::RuntimeLabels::new(&mut assembler);
     let function_labels: HashMap<FuncId, Label> =
@@ -67,9 +70,21 @@ pub fn compile(program: &Program, target: Target) -> Result<Vec<u8>, CodegenErro
             &function_labels,
             &runtime_labels,
             &string_offsets,
+            &witness_offsets,
         )?;
         generator.emit()?;
     }
+
+    // Read before `finish` consumes the assembler; binding is done by now, and
+    // patching pending jumps does not move anything.
+    let code_offsets: HashMap<FuncId, u32> = program
+        .functions
+        .iter()
+        .filter_map(|function| {
+            let label = function_labels[&function.id];
+            assembler.label_offset(label).map(|offset| (function.id, offset))
+        })
+        .collect();
 
     let (text, relocations, symbols) = assembler.finish();
     let entry_offset = symbols
@@ -80,6 +95,8 @@ pub fn compile(program: &Program, target: Target) -> Result<Vec<u8>, CodegenErro
     let layout = elf::layout(text.len() as u64, rodata.len() as u64);
     let mut text = text;
     patch_relocations(&mut text, &relocations, &layout);
+    let mut rodata = rodata;
+    patch_witnesses(&mut rodata, program, &witness_offsets, &code_offsets, &layout)?;
 
     Ok(elf::write(&Image {
         text,
@@ -104,6 +121,52 @@ fn append_strings(rodata: &mut Vec<u8>, program: &Program) -> Vec<u32> {
     offsets
 }
 
+/// Reserves one zero-filled cell per member of each witness table.
+///
+/// The bytes cannot be written yet: they hold the addresses of functions that
+/// have not been emitted. Reserving them here is what fixes the size of the
+/// read-only section, which the layout needs before any address exists.
+fn reserve_witnesses(rodata: &mut Vec<u8>, program: &Program) -> Vec<u32> {
+    let mut offsets = Vec::with_capacity(program.witnesses.len());
+    for witness in &program.witnesses {
+        while rodata.len() % 8 != 0 {
+            rodata.push(0);
+        }
+        offsets.push(rodata.len() as u32);
+        rodata.resize(rodata.len() + witness.methods.len() * 8, 0);
+    }
+    offsets
+}
+
+/// Writes each witness table's entries, now that every function has an
+/// address.
+///
+/// The entries are absolute, not relative: the table is read by generic code
+/// that does not know where it was called from, so there is nothing for a
+/// displacement to be measured against.
+fn patch_witnesses(
+    rodata: &mut [u8],
+    program: &Program,
+    offsets: &[u32],
+    code_offsets: &HashMap<FuncId, u32>,
+    layout: &elf::Layout,
+) -> Result<(), CodegenError> {
+    for (witness, base) in program.witnesses.iter().zip(offsets) {
+        for (slot, function) in witness.methods.iter().enumerate() {
+            let offset = code_offsets.get(function).copied().ok_or_else(|| {
+                CodegenError::Internal(format!(
+                    "witness `{}` names fn{}, which was never emitted",
+                    witness.name, function.0
+                ))
+            })?;
+            let address = layout.text_address + u64::from(offset);
+            let at = *base as usize + slot * 8;
+            rodata[at..at + 8].copy_from_slice(&address.to_le_bytes());
+        }
+    }
+    Ok(())
+}
+
 /// Fills in the RIP-relative displacements now that addresses are known.
 fn patch_relocations(text: &mut [u8], relocations: &[encode::Relocation], layout: &elf::Layout) {
     for relocation in relocations {
@@ -125,6 +188,8 @@ struct FunctionGenerator<'a> {
     function_labels: &'a HashMap<FuncId, Label>,
     runtime_labels: &'a runtime::RuntimeLabels,
     string_offsets: &'a [u32],
+    /// Where each witness table sits in the read-only section.
+    witness_offsets: &'a [u32],
     /// The label of each basic block.
     block_labels: Vec<Label>,
     /// Total bytes reserved below the frame pointer.
@@ -140,6 +205,7 @@ impl<'a> FunctionGenerator<'a> {
         function_labels: &'a HashMap<FuncId, Label>,
         runtime_labels: &'a runtime::RuntimeLabels,
         string_offsets: &'a [u32],
+        witness_offsets: &'a [u32],
     ) -> Result<Self, CodegenError> {
         let convention = noto_runtime::CallingConvention::SystemVAmd64;
         if function.parameters.len() > convention.register_argument_count() {
@@ -164,6 +230,7 @@ impl<'a> FunctionGenerator<'a> {
             function_labels,
             runtime_labels,
             string_offsets,
+            witness_offsets,
             block_labels,
             frame_size,
             values_base: slot_bytes,
@@ -269,6 +336,14 @@ impl<'a> FunctionGenerator<'a> {
             InstKind::FuncAddr { dest, function } => {
                 let label = self.function_labels[function];
                 self.assembler.lea_code(LEFT, label);
+                let offset = self.value_offset(*dest);
+                self.assembler.mov_mem_reg(Reg::Rbp, offset, LEFT);
+            }
+            InstKind::WitnessAddr { dest, witness } => {
+                // The table is data, so this is the same RIP-relative load a
+                // string constant gets, not the code address `FuncAddr` takes.
+                let table = self.witness_offsets[witness.0 as usize];
+                self.assembler.lea_rip(LEFT, Reference::RoData(table));
                 let offset = self.value_offset(*dest);
                 self.assembler.mov_mem_reg(Reg::Rbp, offset, LEFT);
             }
@@ -510,3 +585,113 @@ fn routine_for(intrinsic: Intrinsic) -> Routine {
 /// Silences the unused import when the string data offset is only referenced
 /// by the runtime module.
 const _: i32 = STRING_DATA_OFFSET;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use noto_ir::{Block, Inst, Witness};
+    use noto_span::Span;
+
+    /// A function that returns a constant, so it has an address worth naming.
+    fn returning(id: u32, value: i128) -> Function {
+        let dest = noto_ir::ValueId(0);
+        Function {
+            id: FuncId(id),
+            name: format!("f{id}"),
+            parameters: Vec::new(),
+            slots: Vec::new(),
+            result: IrType::I64,
+            blocks: vec![Block {
+                id: BlockId(0),
+                label: "entry".to_string(),
+                instructions: vec![Inst::new(
+                    InstKind::Const { dest, value: Const::Int { value, ty: IrType::I64 } },
+                    Span::dummy(),
+                )],
+                terminator: Terminator::Return(Some(Operand::Value(dest))),
+            }],
+            value_types: vec![IrType::I64],
+            span: Span::dummy(),
+        }
+    }
+
+    #[test]
+    fn a_witness_table_is_reserved_aligned_and_sized_by_its_members() {
+        let mut program = Program::new();
+        program.witnesses = vec![
+            Witness { name: "A:I".into(), methods: vec![FuncId(0), FuncId(1)] },
+            Witness { name: "B:I".into(), methods: vec![FuncId(0)] },
+        ];
+
+        let mut rodata = vec![0u8; 3];
+        let offsets = reserve_witnesses(&mut rodata, &program);
+
+        assert_eq!(offsets[0] % 8, 0, "a table of addresses must be aligned");
+        assert_eq!(offsets[1], offsets[0] + 16, "two members take two cells");
+        assert_eq!(rodata.len(), offsets[1] as usize + 8);
+    }
+
+    #[test]
+    fn a_program_with_no_witnesses_reserves_nothing() {
+        // The cost is paid per pair actually passed through a bound, so an
+        // unbounded program's image must be byte-for-byte what it was.
+        let program = Program::new();
+        let mut rodata = vec![0u8; 5];
+        assert!(reserve_witnesses(&mut rodata, &program).is_empty());
+        assert_eq!(rodata.len(), 5);
+    }
+
+    #[test]
+    fn patching_writes_the_absolute_address_of_each_member() {
+        let mut program = Program::new();
+        program.witnesses =
+            vec![Witness { name: "A:I".into(), methods: vec![FuncId(1), FuncId(0)] }];
+
+        let mut rodata = Vec::new();
+        let offsets = reserve_witnesses(&mut rodata, &program);
+        let layout = elf::layout(64, rodata.len() as u64);
+        let code_offsets = HashMap::from([(FuncId(0), 0x10u32), (FuncId(1), 0x40u32)]);
+
+        patch_witnesses(&mut rodata, &program, &offsets, &code_offsets, &layout).unwrap();
+
+        let slot = |n: usize| {
+            let at = offsets[0] as usize + n * 8;
+            u64::from_le_bytes(rodata[at..at + 8].try_into().unwrap())
+        };
+        // Slot order follows the witness, not the FuncId order.
+        assert_eq!(slot(0), layout.text_address + 0x40);
+        assert_eq!(slot(1), layout.text_address + 0x10);
+    }
+
+    #[test]
+    fn a_witness_naming_a_function_that_was_never_emitted_is_an_internal_error() {
+        let mut program = Program::new();
+        program.witnesses = vec![Witness { name: "A:I".into(), methods: vec![FuncId(9)] }];
+        let mut rodata = Vec::new();
+        let offsets = reserve_witnesses(&mut rodata, &program);
+        let layout = elf::layout(64, rodata.len() as u64);
+
+        let result =
+            patch_witnesses(&mut rodata, &program, &offsets, &HashMap::new(), &layout);
+        assert!(result.is_err(), "a dangling slot must not reach the image");
+    }
+
+    #[test]
+    fn a_program_carrying_witnesses_still_compiles() {
+        // What the arithmetic does is pinned by the tests above; this is the
+        // pipeline itself — reserve before layout, patch after it, with the
+        // image built from the patched buffer.
+        //
+        // It deliberately asserts nothing about the file's size: the ELF is
+        // padded to a page boundary, so a table this small disappears into
+        // padding that is already there.
+        let mut program = Program::new();
+        program.functions = vec![returning(0, 7), returning(1, 9)];
+        program.entry = Some(FuncId(0));
+        program.witnesses =
+            vec![Witness { name: "A:I".into(), methods: vec![FuncId(0), FuncId(1)] }];
+
+        let image = compile(&program, Target::host()).expect("compiles");
+        assert_eq!(&image[..4], b"\x7fELF");
+    }
+}

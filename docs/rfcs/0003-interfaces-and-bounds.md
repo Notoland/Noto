@@ -426,9 +426,21 @@ declaration compiles to nothing and an implementing class is laid out exactly
 as it was. A bound that only constrains adds nothing to a signature. So
 everything above runs: `examples/interfaces.noto` builds to a native binary.
 
+The machinery a witness needs exists in the IR and the backend, but nothing
+produces one yet:
+
+- `Witness` and `WitnessId` in `noto-ir`, a pool on `Program` interned by the
+  `(type, interface)` pair, and `InstKind::WitnessAddr` to materialise one
+- tables laid out in the read-only image: reserved before the code is laid
+  out, because their size fixes the section's, and written afterwards, because
+  their entries are the addresses of functions that did not exist yet. This is
+  the first thing in the compiler that patches *data* rather than code — every
+  relocation until now was a RIP-relative displacement inside `.text`
+
 Not yet landed:
 
-- **witnesses, and member resolution through a bound.** These are one step:
+- **member resolution through a bound, and the lowering that passes a
+  witness.** These are one step:
   `best.compareTo(x)` inside `fn largest<T: Comparable>` is still `NOTO0404`,
   because making it type check without lowering it would produce a program
   that passes `noto check` and cannot be built. The diagnostic names the bound

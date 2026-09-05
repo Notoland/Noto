@@ -367,7 +367,9 @@ fn crosses_blocks(function: &noto_ir::Function, value: noto_ir::ValueId) -> bool
 fn operands(kind: &noto_ir::InstKind) -> Vec<noto_ir::Operand> {
     use noto_ir::InstKind::*;
     match kind {
-        Const { .. } | LoadLocal { .. } | Alloc { .. } | FuncAddr { .. } => Vec::new(),
+        Const { .. } | LoadLocal { .. } | Alloc { .. } | FuncAddr { .. } | WitnessAddr { .. } => {
+            Vec::new()
+        }
         StoreLocal { value, .. } => vec![value.clone()],
         Unary { operand, .. } | Cast { operand, .. } => vec![operand.clone()],
         Load { address, .. } => vec![address.clone()],

@@ -46,6 +46,28 @@ pub struct SlotId(pub u32);
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct StringId(pub u32);
 
+/// Identifies a witness table in the program's witness pool.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct WitnessId(pub u32);
+
+/// One concrete type's implementations of one interface's members.
+///
+/// This is what a bound is passed as. Generic code is compiled once and does
+/// not know its type argument, so calling a member the bound promises means
+/// loading a slot out of this table and calling through it.
+///
+/// The table is static data in the read-only image: its entries are function
+/// addresses known at link time, so nothing is allocated and nothing is built
+/// at runtime.
+#[derive(Clone, Debug)]
+pub struct Witness {
+    /// A name for the IR's textual form, such as `Version:Comparable`.
+    pub name: String,
+    /// The implementations, in the interface's declaration order. A call site
+    /// reads slot *n* because the interface declared that member *n*th.
+    pub methods: Vec<FuncId>,
+}
+
 /// A compile-time constant.
 #[derive(Clone, PartialEq, Debug)]
 pub enum Const {
@@ -348,7 +370,8 @@ impl Inst {
             | InstKind::Cast { dest, .. } => Some(*dest),
             InstKind::Alloc { dest, .. }
             | InstKind::Load { dest, .. }
-            | InstKind::FuncAddr { dest, .. } => Some(*dest),
+            | InstKind::FuncAddr { dest, .. }
+            | InstKind::WitnessAddr { dest, .. } => Some(*dest),
             InstKind::CallIndirect { dest, .. } => *dest,
             InstKind::Call { dest, .. } | InstKind::Intrinsic { dest, .. } => *dest,
             InstKind::StoreLocal { .. } | InstKind::Store { .. } => None,
@@ -433,6 +456,17 @@ pub enum InstKind {
         dest: ValueId,
         /// The function whose address it is.
         function: FuncId,
+    },
+    /// The address of a witness table.
+    ///
+    /// Materialised at a call to bounded generic code and passed to it as a
+    /// hidden argument; the callee loads a slot out of it to reach a member
+    /// its bound promised.
+    WitnessAddr {
+        /// Where the address goes.
+        dest: ValueId,
+        /// The table whose address it is.
+        witness: WitnessId,
     },
     /// Calls whatever function an address holds.
     ///
@@ -597,6 +631,12 @@ pub struct Program {
     pub functions: Vec<Function>,
     /// The string constant pool, indexed by [`StringId`].
     pub strings: Vec<String>,
+    /// The witness tables, indexed by [`WitnessId`].
+    ///
+    /// One per `(type, interface)` pair a bounded call actually needs, not one
+    /// per pair that exists: a conformance nothing passes through a bound
+    /// costs no bytes in the image.
+    pub witnesses: Vec<Witness>,
     /// The entry point, if the program has one.
     pub entry: Option<FuncId>,
 }
@@ -631,6 +671,25 @@ impl Program {
         StringId(self.strings.len() as u32 - 1)
     }
 
+    /// Looks a witness table up.
+    pub fn witness(&self, id: WitnessId) -> &Witness {
+        &self.witnesses[id.0 as usize]
+    }
+
+    /// Adds a witness table, reusing one already built for the same name.
+    ///
+    /// Two calls that pass the same type through the same bound share one
+    /// table: the name is the `(type, interface)` pair, so equal names are
+    /// necessarily equal tables.
+    pub fn intern_witness(&mut self, name: &str, methods: Vec<FuncId>) -> WitnessId {
+        if let Some(index) = self.witnesses.iter().position(|existing| existing.name == name) {
+            debug_assert_eq!(self.witnesses[index].methods, methods);
+            return WitnessId(index as u32);
+        }
+        self.witnesses.push(Witness { name: name.to_string(), methods });
+        WitnessId(self.witnesses.len() as u32 - 1)
+    }
+
     /// Finds a function by name.
     pub fn function_named(&self, name: &str) -> Option<&Function> {
         self.functions.iter().find(|function| function.name == name)
@@ -640,6 +699,26 @@ impl Program {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_witness_is_interned_once_per_pair() {
+        let mut program = Program::new();
+        let a = program.intern_witness("Version:Comparable", vec![FuncId(3)]);
+        let b = program.intern_witness("Version:Comparable", vec![FuncId(3)]);
+        let c = program.intern_witness("Buffer:Comparable", vec![FuncId(7)]);
+        assert_eq!(a, b, "two calls passing the same type share one table");
+        assert_ne!(a, c);
+        assert_eq!(program.witnesses.len(), 2);
+    }
+
+    #[test]
+    fn a_witness_keeps_the_interfaces_declaration_order() {
+        // The slot a call site reads is the position the interface declared
+        // the member at, so the order here is load-bearing.
+        let mut program = Program::new();
+        let id = program.intern_witness("V:Ordered", vec![FuncId(1), FuncId(9)]);
+        assert_eq!(program.witness(id).methods, vec![FuncId(1), FuncId(9)]);
+    }
 
     #[test]
     fn strings_are_interned_once() {

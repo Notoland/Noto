@@ -160,6 +160,15 @@ impl Assembler {
         self.labels[label.0 as usize] = Some(position);
     }
 
+    /// The offset a label was bound to, or `None` if it never was.
+    ///
+    /// Read before [`finish`](Self::finish), which consumes the assembler.
+    /// Static data holding a code address — a witness table — needs this:
+    /// unlike a jump, it is not patched from inside the code.
+    pub fn label_offset(&self, label: Label) -> Option<u32> {
+        self.labels[label.0 as usize]
+    }
+
     /// Finishes assembly, patching every jump and returning the code.
     ///
     /// Data relocations are returned unresolved: only the caller knows where
