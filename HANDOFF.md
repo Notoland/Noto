@@ -1,19 +1,44 @@
 # Noto — Handoff
 
-State of the project at 0.3. Written for whoever picks the work up next,
+State of the project at **0.14**. Written for whoever picks the work up next,
 human or agent. Read this before touching anything.
 
 **Where the project stands:** the compiler is real and works end to end. A
-`.noto` file becomes a static native ELF executable with no LLVM, no libc, and
+`.noto` file becomes a static native ELF executable with no LLVM, no libc and
 no external toolchain. 546 tests pass, 0 fail, no warnings. The whole tool
-set — `run`, `build`, `check`, `test`, `lint`, `fmt` — is implemented, and
-`class` gives the language its first object type.
+set — `run`, `build`, `check`, `test`, `lint`, `fmt` — is implemented, and so
+is enough of the language to write real programs in it: `examples/wc.noto` is
+a `wc` that prints the same numbers as the system one.
 
 ```
-$ cargo run -q -p noto-driver --example emit -- examples/hello.noto /tmp/hello
-$ /tmp/hello
+$ cargo run -q -p noto-cli -- run examples/hello.noto
 Hello, Noto!
+
+$ cargo run -q -p noto-cli -- build examples/wc.noto -o /tmp/wc
+$ /tmp/wc examples/wc.noto
+106     429     2822    examples/wc.noto
 ```
+
+Three modules of the standard library are written **in Noto**, on top of a
+handful of compiler builtins: `std/math.noto`, `std/string.noto` and
+`std/list.noto`. That is the shape the rest of the library should take —
+add a builtin only when the language cannot express the thing at all.
+
+### The design decisions worth reading before changing anything
+
+Each of these is written down where the reasoning lives, and each was chosen
+over a real alternative:
+
+| Decision | Where |
+|---|---|
+| Generics are erased, not monomorphised — because every value is one word | `docs/design/generics.md` |
+| A lambda captures by value, so it cannot assign to what it captured | `docs/spec.md`, Lambdas |
+| An object is a reference, which is why `struct` is refused | `docs/spec.md`, Objects |
+| A list is a header plus a buffer, so `push` never invalidates a pointer | `docs/spec.md`, Lists |
+| Strings are measured in bytes, not characters | `docs/spec.md`, Strings |
+| One file is one module and its path is its name | `docs/design/modules.md` |
+| The formatter never moves code between lines | `docs/design/formatter.md` |
+| An enum with no data *is* its tag | `docs/spec.md`, Enums |
 
 ---
 
@@ -45,28 +70,33 @@ noto/
 ├── compiler/
 │   ├── span/         noto-span         source positions, source map          9 tests
 │   ├── diagnostics/  noto-diagnostics  diagnostics + terminal renderer        8 tests
-│   ├── lexer/        noto-lexer        tokens, keywords, literals            49 tests
+│   ├── lexer/        noto-lexer        tokens, keywords, literals            50 tests
 │   ├── ast/          noto-ast          syntax tree + visitor                  3 tests
-│   ├── parser/       noto-parser       recursive descent + precedence        58 tests
-│   ├── types/        noto-types        type representation, interning        19 tests
-│   ├── semantic/     noto-semantic     name resolution + type checking       70 tests
-│   ├── ir/           noto-ir           Noto IR + textual form                 9 tests
-│   ├── lower/        noto-lower        AST -> Noto IR                        24 tests
-│   ├── optimizer/    noto-optimizer    IR passes                              7 tests
-│   ├── codegen/      noto-codegen      x86-64 backend + ELF writer           16 tests
-│   └── driver/       noto-driver       pipeline orchestration                 6 tests
+│   ├── parser/       noto-parser       recursive descent + precedence        60 tests
+│   ├── types/        noto-types        types, interning, unification         19 tests
+│   ├── semantic/     noto-semantic     name resolution + type checking      200 tests
+│   ├── ir/           noto-ir           Noto IR + textual form                11 tests
+│   ├── lower/        noto-lower        AST -> Noto IR                        62 tests
+│   ├── optimizer/    noto-optimizer    IR passes                              4 tests
+│   ├── codegen/      noto-codegen      x86-64 backend + ELF writer           25 tests
+│   └── driver/       noto-driver       pipeline, module graph                20 tests
 ├── runtime/          noto-runtime      runtime contract (no machine code)     3 tests
 ├── cli/              noto-cli          the `noto` command
-├── formatter/        noto-formatter    `noto fmt`, token-stream based     31 tests
-├── linter/           noto-linter       `noto lint`, NOTO0600/0601/0604/0605  18 tests
-├── test-runner/      noto-test-runner  `noto test`, one process per test  11 tests
+├── formatter/        noto-formatter    `noto fmt`, token-stream based        35 tests
+├── linter/           noto-linter       `noto lint`, NOTO0600/0601/0603/0604/0605  26 tests
+├── test-runner/      noto-test-runner  `noto test`, one process per test     11 tests
 ├── lsp/              noto-lsp          STUB
 ├── debugger/         noto-debugger     STUB
-├── std/              math.noto, string.noto, list.noto
+├── std/              math.noto, string.noto, list.noto — written in Noto
 ├── docs/             architecture, spec, design notes, RFCs
-├── examples/         hello.noto, tests.noto, point.noto, generics.noto
+├── examples/         hello, tests, point, enums, lists, generics, modules,
+│                     config, wc — plus copies of the std modules they import
 └── tests/            EMPTY
 ```
+
+Every `.noto` file under `examples/` and `std/` carries its own tests, run
+with `noto test <file>`. They are not part of `cargo test`, so run both:
+a change to lowering can pass every Rust test and still break every program.
 
 `compiler/lower` was added beyond the originally proposed layout: lowering
 needs both the AST and the type checker's results, and putting it in `noto-ir`
@@ -79,21 +109,35 @@ them and nothing else should be pulled in with them.
 Compile and run today:
 
 ```noto
-fn add(a: Int, b: Int): Int { return a + b }
+import list { mapped, kept }
 
-fn classify(age: Int): String = when (age) {
-    0..12  -> "Criança"
-    13..17 -> "Adolescente"
-    else   -> "Adulto"
+class Point(val x: Int, var y: Int) {
+    fn distance(): Int = abs(x) + abs(y)
+}
+
+enum Shape { Circle(radius: Int), Rect(width: Int, height: Int), Empty }
+
+fn area(s: Shape): Int = when (s) {
+    Circle(r) -> 3 * r * r
+    Rect(w, h) -> w * h
+    Empty -> 0
+}
+
+class Box<T>(val value: T)
+
+fn firstOr<T>(xs: [T], fallback: T): T {
+    if xs.length == 0 { return fallback }
+    return xs[0]
 }
 
 fn main() {
-    val name = "João"
-    var total = 0
-    for i in 1..=10 { total += i }
-    println("Olá, $name! Soma = $total, ${classify(16)}")
-    val maybe: String? = null
-    println(maybe ?: "sem valor")
+    val shapes = [Shape.Circle(2), Shape.Rect(3, 4), Shape.Empty]
+    val areas = mapped(shapes, { s: Shape -> area(s) })
+    println(firstOr(kept(areas, { it > 10 }), 0))
+
+    val text = readFile("config.txt")
+    if text == null { return }
+    println(text.length)      // a String here, not a String?
 }
 ```
 
@@ -106,6 +150,7 @@ fn main() {
 - string interpolation, concatenation, `.length`, `.toString()`
 - `const` with compile-time folding
 - `println`/`print` overloaded on String/Int/Bool, `assert`
+- `readFile`, `writeFile`, `args()` — raw syscalls, no libc
 - `test "name" { ... }` declarations are collected, type checked and run by
   `noto test`
 - `import`/`export`: a program is many files, one module each, resolved from
@@ -147,7 +192,7 @@ fn main() {
 
 Everything below **parses** (the parser covers the full language) but is
 rejected during semantic analysis or lowering with `NOTO0500 … not implemented
-in Noto 0.1`. Nothing is silently accepted and miscompiled.
+in Noto 0.14`. Nothing is silently accepted and miscompiled.
 
 | Construct | Rejected in | Notes |
 |---|---|---|
@@ -173,107 +218,81 @@ Runtime limitations, documented and deliberate:
 
 ## 5. What remains, in the order it should be done
 
-### 5.1 CLI — highest priority, nothing else is usable without it
+Everything the original handoff listed under this heading — the CLI, the
+documentation, the tooling, the object model, modules, enums, generics — is
+done. What follows is what is left, ordered by what unblocks the most.
 
-`cli/src/main.rs` is `fn main() {}`. Everything it needs already exists in
-`noto-driver`; this is wiring, not new compiler work.
+### 5.1 Interfaces and bounds — the biggest single unlock
 
-Use `compiler/driver/examples/emit.rs` as the reference — it already does
-read → compile → write with the executable bit set.
+Nobody can write a `Map<K, V>` today, because comparing two `K` values needs
+`==` on a type parameter and a bare `T` permits only moving the value. Bounds
+(`fn largest<T: Comparable>(..)`) are what lift that, and they need
+interfaces, which parse and are rejected in `collect.rs`.
 
-Commands for this milestone:
+This also unblocks `data class` (structural equality is an interface a class
+implements), sorting, and hashing.
 
-```
-noto run <file.noto>      compile to a temporary file and execute it
-noto build <file.noto>    write the executable next to the source
-noto check <file.noto>    Stage::Check, diagnostics only
-noto version
-```
+**Decide first, in an RFC:** whether a bound is checked structurally or
+nominally, and whether an interface can be implemented for a type declared
+elsewhere. Both change what erasure can keep doing — a bounded `T` may need
+to carry a witness, and that is a pointer per call, which is the first thing
+in the language that would not be free.
 
-Then: `noto test`, `noto fmt`, `noto lint`, `noto clean`.
+### 5.2 Floating point
 
-Details that matter:
-- `CompileOptions { stage, target, optimize }` selects how far to go —
-  `Stage::{Parse, Check, Ir, Executable}`.
-- Add `--emit=ir` printing `program.to_string()`; the textual IR already exists
-  and is tested.
-- Use `RenderStyle::Ansi` when stdout is a terminal, `Plain` otherwise.
-- Exit code 1 when `sink.has_errors()`, and print `noto_driver::summary(&sink)`.
-- Executables need mode `0o755` (`noto_codegen::EXECUTABLE_MODE`).
+`Float32` and `Float64` parse, have `Primitive` variants and `IrType` variants,
+and are rejected at `compiler/lower/src/expr.rs` `lower_literal`. What is
+missing is a second register class in the backend: SSE registers, `movsd` and
+friends in the encoder, and the System V rule that floats are passed in `xmm0`
+through `xmm7` rather than the integer registers.
 
-**Acceptance:** `noto run examples/hello.noto` prints `Hello, Noto!`.
+**Read `docs/design/generics.md` before starting.** Erasure holds because
+every value is one machine word; a float in a different register class is the
+first thing that breaks that. Landing floats means choosing between
+monomorphising generic functions, boxing floats, or splitting the register
+classes at the call boundary. That choice is yours and the reasoning it has to
+overturn is written down there.
 
-### 5.2 Documentation — required by the specification, currently absent
+### 5.3 Sockets, and what they do and do not unlock
 
-Nothing exists in `docs/`. All of it has to be written, and the decisions are
-already made and encoded in the code and tests — write them down, do not
-re-invent them.
+`readFile`, `writeFile` and `args()` show the shape: a routine in
+`compiler/codegen/src/x86_64/runtime.rs` making raw syscalls, exposed as a
+builtin. `socket`, `connect`, `send` and `recv` are the same shape, and a
+plaintext TCP client is a day of work.
 
-- `README.md` — what Noto is, the philosophy statement, how to build, hello world
-- `docs/architecture.md` — the pipeline, one section per crate, why Noto IR is
-  its own IR and LLVM is not the architecture
-- `docs/spec.md` — the language as implemented, section by section, marking
-  what is not implemented yet
-- `docs/design/operator-precedence.md` — **the table is in
-  `compiler/parser/src/expr.rs`, enum `Precedence`.** The two must agree. The
-  deliberate divergence from C (bitwise binds tighter than comparison) needs
-  its rationale written down.
-- `docs/design/lexer.md` — statement termination rule, reserved-for-future word
-  list, interpolation
-- `docs/design/noto-ir.md` — instruction set, textual form, why locals are slots
-  rather than SSA
-- `docs/design/diagnostics.md` — the code ranges allocated per phase, from
-  `compiler/diagnostics/src/lib.rs` module `codes`
-- `docs/rfcs/0000-template.md` and the RFC process
-- `docs/rfcs/0001-memory-model.md` — **open question, do not decide alone.**
-  The spec asks for a hybrid model that is not Rust, not GC, not ARC. Nothing
-  is decided; the bump allocator is a placeholder.
-- `docs/rfcs/0002-defer-semantics.md` — referenced from
-  `compiler/parser/src/stmt.rs` and does not exist yet
-- `LICENSE` — Apache 2.0, referenced by every `Cargo.toml`, file missing
+Be honest about what that gets: **it is not enough for an HTTPS client.**
+Discord, and every other modern API, needs TLS 1.2 or 1.3 — elliptic curve
+key exchange, AES-GCM, SHA-256 and X.509 parsing, written from scratch. That
+is months, not days, and it is the real distance between here and a bot. DNS
+is a smaller version of the same problem: no resolver exists either.
 
-### 5.3 Standard library
+### 5.4 Smaller language work, roughly in dependency order
 
-`std/` is empty. Start with what the compiler already provides as builtins and
-grow outward. Needs the module system (5.5) before it can be more than a
-handful of intrinsics.
+1. **`is` and `as`**, with narrowing the way a null check already narrows.
+   `check_pattern` and `check_expr` reject both today.
+2. **`defer`** — needs scope-exit tracking in lowering, including the `return`
+   and `break` paths. **Answer [RFC 0002](docs/rfcs/0002-defer-semantics.md)
+   first:** it has four open questions and none of them should be decided by
+   whoever happens to be typing.
+3. **Generic enums** — `enum Maybe<T>`. The machinery is all there; it is the
+   same work generic classes took.
+4. **More than six parameters** — stack arguments in the System V calling
+   convention. `CodegenError::TooManyParameters` is where it fails.
+5. **Named arguments**, **local `fn` inside a body**, **extension functions**,
+   **tuples** — each self-contained, each rejected in one place.
+6. **Safe calls `p?.f()`** — `p?.x` works; the call form reuses the same
+   branch and was left out only for scope.
 
-### 5.4 Tooling
+### 5.5 The memory model — the one nobody should decide alone
 
-- ~~**formatter** (`noto fmt`)~~ — done; the rules are in
-  `docs/design/formatter.md`. It works on the token stream, not the AST: the
-  lexer keeps only `///` comments, so an AST printer would delete the rest.
-  It does not re-flow lines — that needs its own RFC, because a line break is
-  part of the grammar.
-- ~~**linter** (`noto lint`)~~ — done, except `NOTO0603` (unused import),
-  which needs the module system first. `NOTO0602` stayed in semantic analysis
-  rather than moving to the linter: it falls out of the `Nothing` type for
-  free and catches more than a syntactic lint could.
-- ~~**test runner** (`noto test`)~~ — done. Compiles the file once, then emits
-  one executable per test with that test as `Program::entry` and runs each in
-  its own process. `CompileOptions::allow_no_main` lets a file of tests build.
+The allocator never frees. Every list, string, object, enum case and closure
+is bump-allocated over `mmap` and stays until the process exits. That is fine
+for a compiler run and wrong for anything long-lived, and it is the single
+largest open question in the project.
 
-### 5.5 Language work, roughly in dependency order
-
-1. **object model** — ~~layout, construction, field access, methods,
-   properties and body fields~~ done for `class`. What remains: defaults on
-   constructor parameters, method values, then inheritance and interfaces. `struct` and the `data` flavours wait on RFC 0001, since
-   they promise value semantics and an object is a reference today. A `data
-   class` also needs structural equality and a `toString` — an object cannot
-   be printed at all right now.
-2. **module system** — ~~`import`/`export`, multi-file compilation~~ done.
-   What remains: re-exporting an imported name, visibility between `export`
-   and private, and a package manifest so a program can depend on something
-   it did not copy in.
-3. **enums** — ~~cases, associated data, matching, destructuring and
-   exhaustiveness~~ done. What remains: explicit case values (`Red = 1`),
-   methods on an enum, and `is`/`as` narrowing.
-4. **generics** — ~~functions and classes~~ done, by erasure. What remains:
-   generic enums, bounds (which need interfaces), and explicit type
-   arguments.
-5. **floats** — SSE registers in the encoder and a second register class.
-6. **`defer`** — scope-exit tracking in lowering, including error paths.
-7. async/await, FFI, LSP, debugger, package manager, registry.
+[RFC 0001](docs/rfcs/0001-memory-model.md) is where it belongs, and it is
+still empty of a decision. The specification asks for a hybrid that is not
+Rust, not a GC and not ARC. **Do not answer it quietly in a commit.**
 
 ## 6. Decisions already made — do not silently change these
 
@@ -310,6 +329,20 @@ RFC.
 - **Object layout lives in `noto-lower` and nowhere else.** The IR has
   `alloc`, `load [ptr+n]` and `store [ptr+n]` and no notion of a field, so a
   different layout changes one crate.
+- **Generics are erased, not monomorphised.** One compiled copy serves every
+  type argument, because every value is one machine word. `Float64` is what
+  would break it; `docs/design/generics.md` says so and says what to do.
+- **A lambda captures by value**, so it cannot assign to what it captured —
+  the write would change its own copy. It is an error with a message.
+- **A list is a header plus a separate buffer.** `push` replaces the buffer,
+  and the indirection is what keeps every pointer to the list valid.
+- **Strings are bytes.** `"joão".length` is 5. Characters need a decoder that
+  does not exist.
+- **A null check narrows what it proves**, in the branch it guards and after a
+  guard clause that leaves the block. It reads one shape and claims nothing
+  about any other condition.
+- **The formatter never moves code between lines**, and never changes the
+  token stream. Both are tested over a corpus.
 - **Noto emits the ELF file itself.** No system linker, no LLVM. Keep it that
   way — it is why `noto build` works on a machine with nothing installed.
 
@@ -318,8 +351,13 @@ RFC.
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
 cargo test --workspace          # 546 tests, must stay at 0 failures
-cargo build --workspace
-cargo run -q -p noto-driver --example emit -- examples/hello.noto /tmp/hello && /tmp/hello
+cargo build --workspace         # must stay at 0 warnings
+
+# The Rust tests are half the suite. Every .noto file carries its own, and a
+# change to lowering can pass every Rust test while breaking every program.
+for f in examples/*.noto std/*.noto; do cargo run -q -p noto-cli -- test "$f"; done
+cargo run -q -p noto-cli -- fmt --check examples/*.noto std/*.noto
+cargo run -q -p noto-cli -- lint examples/wc.noto
 ```
 
 House rules the existing code follows:
@@ -336,3 +374,10 @@ House rules the existing code follows:
 - **Diagnostics are part of the language surface.** Stable `NOTOnnnn` code,
   primary span, and a `help:` when there is a concrete fix.
 - Keep it warning-clean: `cargo build --workspace` currently emits none.
+- **A language decision gets written down before it gets written.**
+  `docs/design/` holds one file per decision that had a real alternative, and
+  each says what would overturn it. A commit that quietly picks one of these
+  is the thing this file exists to prevent.
+- **The standard library is written in Noto.** Add a compiler builtin only
+  when the language cannot express the thing at all — `std/string.noto` needs
+  three builtins and gets `split`, `trim`, `indexOf` and the rest from them.
