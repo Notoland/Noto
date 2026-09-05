@@ -61,9 +61,10 @@ test "addition works" {
 - `import` and `export` carry names across modules — see
   [Programs and files](#programs-and-files).
 - `enum` declares a closed set of cases — see [Enums](#enums).
-- Not implemented: `struct`, `data class`, `data struct`, `interface`,
-  generics, extension functions, local `fn` inside a body, named arguments,
-  re-exporting an imported name.
+- `interface` declares members a type promises to provide — see
+  [Interfaces](#interfaces).
+- Not implemented: `struct`, `data class`, `data struct`, extension functions,
+  local `fn` inside a body, named arguments, re-exporting an imported name.
 
 ## Objects
 
@@ -169,10 +170,62 @@ a receiver that cannot be null it is a warning, because the check can never
 fail.
 
 Not implemented for classes: default values for constructor parameters,
-inheritance, interfaces, generics, method values, safe method calls
-(`p?.f()`), `data class` equality and printing. An object has no `toString`, so
-`println(p)` does not compile — print its fields, or give the class a method
-that builds a `String`.
+inheritance, method values, safe method calls (`p?.f()`), `data class`
+equality and printing. An object has no `toString`, so `println(p)` does not
+compile — print its fields, or give the class a method that builds a `String`.
+
+## Interfaces
+
+An interface names members a type promises to provide.
+
+```noto
+interface Comparable {
+    fn compareTo(other: Self): Int
+}
+
+interface Sized {
+    val size: Int
+}
+
+class Version(val major: Int, val minor: Int): Comparable {
+    fn compareTo(other: Version): Int = major - other.major
+}
+
+class Buffer(val size: Int): Comparable, Sized {
+    fn compareTo(other: Buffer): Int = size - other.size
+}
+```
+
+`Self` is the implementing type, not the interface. Inside `Comparable`,
+`other: Self` means another value of whatever type implements it, so a
+`Version` compares to a `Version` and never to a `Buffer`. `Self` is legal
+only inside an interface body; anywhere else it is an error.
+
+Conformance is **nominal** and declared where the type is declared. A type
+implements an interface at most once, so there is no overlap to resolve, and
+"does `Buffer` implement `Sized`?" is answered by reading `Buffer`'s first
+line. The checker verifies at the class that every required member is present
+with a matching signature once `Self` is read as the implementing type: a
+missing one is an error, and so is one whose parameters, result or mutability
+do not match. A `var` requirement is not met by a `val`.
+
+An interface that extends another does not drag it in — implementing
+`Ordered: Comparable` requires `Comparable` to be listed at the type as well.
+
+An interface is **not a value type**: `val c: Comparable = ..` is an error.
+A value of one would have to carry a witness pointer alongside its data, and
+every value in Noto is one machine word. Heterogeneous collections and dynamic
+dispatch are a separate decision, not made yet.
+
+An interface with only abstract members costs nothing: it emits no code, and a
+class that implements one is laid out exactly as it would be without it.
+
+Not implemented: **bounds** (`fn largest<T: Comparable>(..)`), which is what
+would let a generic function call an interface member — see
+[Generics](#generics); generic interfaces (`interface Into<T>`); default
+method bodies; built-in conformances for the primitive types; interfaces on an
+enum. The reasoning and the plan are in
+[RFC 0003](rfcs/0003-interfaces-and-bounds.md).
 
 ## Enums
 
@@ -293,7 +346,9 @@ argument cannot be inferred and is an error naming it.
 A `T` has no members, no operators and no literals: you may bind it, pass it,
 return it and store it, and nothing else. That is not a rule of its own — `T`
 is not `Int`, so `+` does not apply, and it declares no fields, so `.x` does
-not resolve. Bounds would lift it and need interfaces, which do not exist.
+not resolve. Bounds — `fn largest<T: Comparable>(..)` — are what would lift
+it. [Interfaces](#interfaces) now exist; bounds do not, so a `T` is still a
+value you can only move around.
 
 A class is generic the same way, and its parameters are in scope for its
 fields and methods:

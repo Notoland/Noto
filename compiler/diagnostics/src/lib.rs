@@ -320,6 +320,18 @@ pub mod codes {
     pub const NO_IMPLICIT_CONVERSION: Code = Code(409);
     /// A condition that is not `Bool`.
     pub const NON_BOOL_CONDITION: Code = Code(410);
+    /// A type is missing a member the interface it lists requires.
+    pub const MISSING_INTERFACE_MEMBER: Code = Code(411);
+    /// A member meant to implement an interface has the wrong signature.
+    pub const INTERFACE_SIGNATURE_MISMATCH: Code = Code(412);
+    // 413 is reserved for an unsatisfied bound at a call, which lands with
+    // bounds themselves; see RFC 0003.
+    /// An interface named where a value type is expected.
+    pub const INTERFACE_NOT_A_VALUE: Code = Code(414);
+    /// An `interface` body declares storage an interface cannot have.
+    pub const INTERFACE_HAS_STORAGE: Code = Code(415);
+    /// `Self` written outside an interface or a member implementing one.
+    pub const SELF_OUTSIDE_INTERFACE: Code = Code(416);
 
     // 0500-0599: lowering to Noto IR and code generation.
     /// A construct the current backend cannot lower yet.

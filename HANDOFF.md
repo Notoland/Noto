@@ -5,7 +5,7 @@ human or agent. Read this before touching anything.
 
 **Where the project stands:** the compiler is real and works end to end. A
 `.noto` file becomes a static native ELF executable with no LLVM, no libc and
-no external toolchain. 546 tests pass, 0 fail, no warnings. The whole tool
+no external toolchain. 565 tests pass, 0 fail, no warnings. The whole tool
 set — `run`, `build`, `check`, `test`, `lint`, `fmt` — is implemented, and so
 is enough of the language to write real programs in it: `examples/wc.noto` is
 a `wc` that prints the same numbers as the system one.
@@ -74,7 +74,7 @@ noto/
 │   ├── ast/          noto-ast          syntax tree + visitor                  3 tests
 │   ├── parser/       noto-parser       recursive descent + precedence        60 tests
 │   ├── types/        noto-types        types, interning, unification         19 tests
-│   ├── semantic/     noto-semantic     name resolution + type checking      200 tests
+│   ├── semantic/     noto-semantic     name resolution + type checking      219 tests
 │   ├── ir/           noto-ir           Noto IR + textual form                11 tests
 │   ├── lower/        noto-lower        AST -> Noto IR                        62 tests
 │   ├── optimizer/    noto-optimizer    IR passes                              4 tests
@@ -90,7 +90,8 @@ noto/
 ├── std/              math.noto, string.noto, list.noto — written in Noto
 ├── docs/             architecture, spec, design notes, RFCs
 ├── examples/         hello, tests, point, enums, lists, generics, modules,
-│                     config, wc — plus copies of the std modules they import
+│                     config, interfaces, wc — plus copies of the std modules
+│                     they import
 └── tests/            EMPTY
 ```
 
@@ -163,6 +164,13 @@ fn main() {
   monomorphised because every value is one machine word — see
   `docs/design/generics.md`, which also says what floats would overturn.
   `std/list.noto` is written on them
+- `interface Comparable { fn compareTo(other: Self): Int }` and
+  `class Version(..): Comparable`: abstract method and property requirements,
+  checked once at the class with `Self` read as the implementing type.
+  Conformance is nominal, declared at the type, and costs nothing at runtime —
+  an interface with only abstract members emits no code, so an implementing
+  class is laid out exactly as it was. Bounds, witnesses and default bodies
+  are **not** here yet; see RFC 0003's implementation status
 - inside a method a bare name is the receiver's member, and `p?.x` reads a
   field or property through a nullable receiver, producing a nullable result
 - lambdas: a value of type `fn(A): B`, capturing by value into a closure of
@@ -197,10 +205,10 @@ in Noto 0.14`. Nothing is silently accepted and miscompiled.
 | Construct | Rejected in | Notes |
 |---|---|---|
 | `struct` / `data class` / `data struct` | `compiler/semantic/src/collect.rs` `declare_class` | value semantics need RFC 0001; `class` works |
-| class inheritance, interfaces, defaults on constructor parameters | `collect.rs` `declare_class` | fields, methods and properties work |
-| `interface` | same | |
-| explicit enum case values (`Red = 1`), methods on an enum | `collect.rs` `declare_enum` | enums otherwise work, data included |
-| generic enums, bounds, explicit type arguments | `collect.rs` `declare_enum`, `check_call` | generic functions and classes work |
+| class inheritance, defaults on constructor parameters | `collect.rs` `resolve_interface`, `declare_class` | fields, methods, properties and interfaces work |
+| generic interfaces, default method bodies | `collect.rs` `declare_interface`, `collect_interface` | abstract requirements work; see RFC 0003 |
+| explicit enum case values (`Red = 1`), methods on an enum, interfaces on one | `collect.rs` `declare_enum` | enums otherwise work, data included |
+| generic enums, bounds, explicit type arguments | `collect.rs` `declare_enum`, `collect_fn`, `check_call` | generic functions and classes work |
 | extension functions | `collect.rs` `collect_fn` | receiver resolution missing |
 | floats | `compiler/lower/src/expr.rs` `lower_literal` | needs SSE registers in the backend |
 | `defer` | `compiler/lower/src/stmt.rs` `lower_stmt` | needs scope-exit tracking |
@@ -224,19 +232,38 @@ done. What follows is what is left, ordered by what unblocks the most.
 
 ### 5.1 Interfaces and bounds — the biggest single unlock
 
-Nobody can write a `Map<K, V>` today, because comparing two `K` values needs
-`==` on a type parameter and a bare `T` permits only moving the value. Bounds
-(`fn largest<T: Comparable>(..)`) are what lift that, and they need
-interfaces, which parse and are rejected in `collect.rs`.
+**Interfaces themselves have landed**, as far as declaring and implementing
+them goes: [RFC 0003](docs/rfcs/0003-interfaces-and-bounds.md) settled the
+semantics (nominal, declared at the type, erased) and the checker enforces
+them. `examples/interfaces.noto` builds and runs.
+
+**Bounds have not**, and they are the half that unblocks the rest. Nobody can
+write a `Map<K, V>` today, because comparing two `K` values needs `==` on a
+type parameter and a bare `T` permits only moving the value.
+`fn largest<T: Comparable>(..)` is still rejected in `collect_fn`.
+
+The order the remaining work wants to go in:
+
+1. **Bounds in the checker.** `<T: Comparable>` makes the bound's members
+   resolve on a `T`, and a type argument that does not satisfy one is
+   `NOTO0413` at the call. No code generation yet.
+2. **Witnesses.** A bounded generic function takes one hidden pointer per
+   bound — a static table of the concrete type's implementations. This is the
+   first argument in the language that is not in the source signature, and the
+   first thing generics do that is not free.
+3. **Bounded generic classes.** The witness becomes a hidden field, written at
+   construction.
+4. **Default method bodies**, which are what step 2 makes reachable, and the
+   built-in conformance table for the primitives (`Int: Comparable`, ...) that
+   makes a bound useful on day one.
+
+RFC 0003's "Still unresolved" section lists what is not decided yet — witness
+representation, whether the compiler knows `Eq`/`Ord` by name, and whether a
+bound may reference the enclosing type parameters. Answer those there, not in
+a commit.
 
 This also unblocks `data class` (structural equality is an interface a class
 implements), sorting, and hashing.
-
-**Decide first, in an RFC:** whether a bound is checked structurally or
-nominally, and whether an interface can be implemented for a type declared
-elsewhere. Both change what erasure can keep doing — a bounded `T` may need
-to carry a witness, and that is a pointer per call, which is the first thing
-in the language that would not be free.
 
 ### 5.2 Floating point
 
@@ -350,7 +377,7 @@ RFC.
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
-cargo test --workspace          # 546 tests, must stay at 0 failures
+cargo test --workspace          # 565 tests, must stay at 0 failures
 cargo build --workspace         # must stay at 0 warnings
 
 # The Rust tests are half the suite. Every .noto file carries its own, and a

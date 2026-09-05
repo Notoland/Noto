@@ -37,6 +37,10 @@ pub struct ClassId(pub u32);
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct EnumId(pub u32);
 
+/// Identifies a declared interface.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct InterfaceId(pub u32);
+
 /// What a name in the program refers to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Resolution {
@@ -239,6 +243,10 @@ pub struct ClassInfo {
     pub properties: Vec<PropertyInfo>,
     /// Its methods, in declaration order.
     pub methods: Vec<MethodInfo>,
+    /// The interfaces it declares conformance to, in the order they were
+    /// listed. Conformance is nominal and lives here, at the declaration, so
+    /// "does this type implement that?" is answered by reading its first line.
+    pub interfaces: Vec<InterfaceId>,
     /// The synthesised `Class.<init>` that runs the body fields' initialisers,
     /// present when any field has one.
     pub init: Option<FunctionId>,
@@ -271,6 +279,77 @@ impl ClassInfo {
             .iter()
             .position(|property| property.name == name)
             .map(|index| (index as u32, &self.properties[index]))
+    }
+}
+
+/// One member an interface requires of its implementers.
+///
+/// The signature is stored as types rather than as a [`FunctionId`] because
+/// nothing calls it directly: it is the shape a class's own method is measured
+/// against, with `Self` substituted for the implementing type.
+#[derive(Clone, Debug)]
+pub struct InterfaceMethod {
+    /// The name as written.
+    pub name: String,
+    /// Its parameter types, receiver excluded.
+    pub parameters: Vec<TypeId>,
+    /// Its result type.
+    pub result: TypeId,
+    /// Where it was declared.
+    pub span: Span,
+}
+
+/// One property an interface requires of its implementers.
+#[derive(Clone, Debug)]
+pub struct InterfaceProperty {
+    /// The name as written.
+    pub name: String,
+    /// Its declared type.
+    pub ty: TypeId,
+    /// Whether the requirement is `var`, which a `val` does not meet.
+    pub is_mutable: bool,
+    /// Where it was declared.
+    pub span: Span,
+}
+
+/// A checked interface declaration.
+///
+/// An interface is not a value type: no [`Type`](noto_types::Type) ever names
+/// one outside a bound. It carries a [`DefId`] all the same, because `Self`
+/// inside its body is type parameter 0 of that def — which is what lets the
+/// existing substitution machinery read `Self` as the implementing type.
+#[derive(Clone, Debug)]
+pub struct InterfaceInfo {
+    /// The name as written.
+    pub name: String,
+    /// The module that declares it.
+    pub module: ModuleId,
+    /// Whether it is visible to a module that imports this one.
+    pub is_exported: bool,
+    /// The interfaces it extends. Implementing this one requires implementing
+    /// each of those too; the checker never synthesises them.
+    pub extends: Vec<InterfaceId>,
+    /// The methods it requires, in declaration order.
+    pub methods: Vec<InterfaceMethod>,
+    /// The properties it requires, in declaration order.
+    pub properties: Vec<InterfaceProperty>,
+    /// The declaration id `Self` is a parameter of.
+    pub def: DefId,
+    /// The type `Self` stands for inside this interface's body.
+    pub self_ty: TypeId,
+    /// Where it was declared.
+    pub span: Span,
+}
+
+impl InterfaceInfo {
+    /// Looks a required method up by name.
+    pub fn method(&self, name: &str) -> Option<&InterfaceMethod> {
+        self.methods.iter().find(|method| method.name == name)
+    }
+
+    /// Looks a required property up by name.
+    pub fn property(&self, name: &str) -> Option<&InterfaceProperty> {
+        self.properties.iter().find(|property| property.name == name)
     }
 }
 
@@ -353,6 +432,8 @@ pub struct Analysis {
     pub classes: Vec<ClassInfo>,
     /// Every enum, indexed by [`EnumId`].
     pub enums: Vec<EnumInfo>,
+    /// Every interface, indexed by [`InterfaceId`].
+    pub interfaces: Vec<InterfaceInfo>,
     /// The name of every module, indexed by [`ModuleId`]; the root's is empty.
     pub modules: Vec<String>,
     /// Every test.
@@ -386,6 +467,11 @@ impl Analysis {
     /// Looks an enum up by id.
     pub fn enum_at(&self, id: EnumId) -> &EnumInfo {
         &self.enums[id.0 as usize]
+    }
+
+    /// Looks an interface up by id.
+    pub fn interface(&self, id: InterfaceId) -> &InterfaceInfo {
+        &self.interfaces[id.0 as usize]
     }
 
     /// The enum a type names, if it names one.

@@ -101,6 +101,12 @@ pub enum DefKind {
     /// An `enum` some case of which carries data: a value of it is a pointer
     /// to its tag followed by that case's fields.
     EnumWithData,
+    /// An `interface`: a set of members a type can promise to provide.
+    ///
+    /// No value ever has this type — an interface is not a value type, only a
+    /// bound (RFC 0003). It owns a def anyway because `Self` inside its body
+    /// is a type parameter of it, substituted for the implementing type.
+    Interface,
 }
 
 /// Identifies a declaration in the definition table.

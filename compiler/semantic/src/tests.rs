@@ -469,9 +469,16 @@ fn reports_constructs_the_compiler_cannot_lower_yet() {
     for (source, needle) in [
         ("struct Point(val x: Int)\nfn main() {}\n", "not supported by this compiler yet"),
         ("data class User(val name: String)\nfn main() {}\n", "not supported by this compiler yet"),
-        ("interface Shape { fn area(): Int }\nfn main() {}\n", "not supported by this compiler yet"),
         ("enum Colour { Red = 1 }\nfn main() {}\n", "not supported by this compiler yet"),
         ("fn f<T: Comparable>(x: T) {}\nfn main() {}\n", "bounds on a type parameter"),
+        (
+            "interface Into<T> { fn into(): T }\nfn main() {}\n",
+            "generic interfaces are not supported by this compiler yet",
+        ),
+        (
+            "interface Comparable {\n    fn compareTo(other: Self): Int\n    fn lessThan(other: Self): Bool = true\n}\nfn main() {}\n",
+            "default method bodies are not supported by this compiler yet",
+        ),
     ] {
         check_error(source, needle);
     }
@@ -479,9 +486,214 @@ fn reports_constructs_the_compiler_cannot_lower_yet() {
 
 #[test]
 fn an_unsupported_construct_still_produces_an_analysis() {
-    let (analysis, messages) = check("interface Shape { fn area(): Int }\nfn main() {}\n");
+    let (analysis, messages) = check("interface Into<T> { fn into(): T }\nfn main() {}\n");
     assert!(!messages.is_empty());
     assert!(analysis.entry.is_some(), "`main` is still analysed");
+}
+
+// --- interfaces ------------------------------------------------------------
+
+#[test]
+fn an_interface_declares_the_members_it_requires() {
+    let analysis = check_ok(
+        "interface Comparable {\n    fn compareTo(other: Self): Int\n}\nfn main() {}\n",
+    );
+    assert_eq!(analysis.interfaces.len(), 1);
+    let comparable = &analysis.interfaces[0];
+    assert_eq!(comparable.name, "Comparable");
+    assert_eq!(comparable.methods.len(), 1);
+    assert_eq!(comparable.methods[0].name, "compareTo");
+    // `Self` is a type parameter of the interface, not any concrete type.
+    assert_eq!(comparable.methods[0].parameters, vec![comparable.self_ty]);
+}
+
+#[test]
+fn a_class_implements_an_interface_with_self_read_as_itself() {
+    let analysis = check_ok(
+        "interface Comparable {\n    fn compareTo(other: Self): Int\n}\n\
+         class Version(val major: Int) : Comparable {\n    fn compareTo(other: Version): Int = major - other.major\n}\n\
+         fn main() {}\n",
+    );
+    let version = &analysis.classes[0];
+    assert_eq!(version.interfaces.len(), 1, "conformance is recorded at the class");
+    assert_eq!(analysis.interface(version.interfaces[0]).name, "Comparable");
+}
+
+#[test]
+fn an_interface_may_be_implemented_before_it_is_declared() {
+    check_ok(
+        "class Version(val major: Int) : Comparable {\n    fn compareTo(other: Version): Int = major\n}\n\
+         interface Comparable {\n    fn compareTo(other: Self): Int\n}\n\
+         fn main() {}\n",
+    );
+}
+
+#[test]
+fn reports_a_method_an_interface_requires_and_the_class_lacks() {
+    check_error(
+        "interface Comparable {\n    fn compareTo(other: Self): Int\n}\n\
+         class Version(val major: Int) : Comparable\n\
+         fn main() {}\n",
+        "is missing `compareTo`",
+    );
+}
+
+#[test]
+fn the_missing_member_error_shows_the_signature_to_write() {
+    let (_, messages) = check(
+        "interface Comparable {\n    fn compareTo(other: Self): Int\n}\n\
+         class Version(val major: Int) : Comparable\n\
+         fn main() {}\n",
+    );
+    // `Self` is rendered as the implementing type, which is what gets typed.
+    assert!(
+        messages.iter().any(|m| m.contains("compareTo")),
+        "{messages:?}"
+    );
+}
+
+#[test]
+fn reports_an_implementation_with_the_wrong_signature() {
+    check_error(
+        "interface Comparable {\n    fn compareTo(other: Self): Int\n}\n\
+         class Version(val major: Int) : Comparable {\n    fn compareTo(other: Version): Bool = true\n}\n\
+         fn main() {}\n",
+        "does not match what `Comparable` requires",
+    );
+}
+
+#[test]
+fn self_is_not_satisfied_by_another_implementing_type() {
+    // `other: Self` means another `Version`, never another `Comparable`.
+    check_error(
+        "interface Comparable {\n    fn compareTo(other: Self): Int\n}\n\
+         class Version(val major: Int) : Comparable {\n    fn compareTo(other: Int): Int = 0\n}\n\
+         fn main() {}\n",
+        "does not match what `Comparable` requires",
+    );
+}
+
+#[test]
+fn an_interface_may_require_a_property_a_field_satisfies() {
+    check_ok(
+        "interface Sized {\n    val size: Int\n}\n\
+         class Buffer(val size: Int) : Sized\n\
+         fn main() {}\n",
+    );
+}
+
+#[test]
+fn reports_a_required_property_the_class_lacks() {
+    check_error(
+        "interface Sized {\n    val size: Int\n}\n\
+         class Buffer(val capacity: Int) : Sized\n\
+         fn main() {}\n",
+        "is missing `size`",
+    );
+}
+
+#[test]
+fn a_val_does_not_satisfy_a_var_requirement() {
+    check_error(
+        "interface Counter {\n    var count: Int\n}\n\
+         class Clicks(val count: Int) : Counter\n\
+         fn main() {}\n",
+        "requires a `var`",
+    );
+}
+
+#[test]
+fn a_required_property_must_have_the_declared_type() {
+    check_error(
+        "interface Sized {\n    val size: Int\n}\n\
+         class Buffer(val size: String) : Sized\n\
+         fn main() {}\n",
+        "does not match what `Sized` requires",
+    );
+}
+
+#[test]
+fn an_interface_is_not_a_value_type() {
+    check_error(
+        "interface Comparable {\n    fn compareTo(other: Self): Int\n}\n\
+         fn pick(c: Comparable): Int = 0\n\
+         fn main() {}\n",
+        "is an interface, not a value type",
+    );
+}
+
+#[test]
+fn self_outside_an_interface_is_an_error() {
+    check_error(
+        "class Version(val major: Int) {\n    fn same(other: Self): Bool = true\n}\n\
+         fn main() {}\n",
+        "`Self` means the implementing type",
+    );
+}
+
+#[test]
+fn an_interface_cannot_store_anything() {
+    check_error(
+        "interface Sized {\n    val size: Int = 0\n}\n\
+         fn main() {}\n",
+        "cannot have an initialiser",
+    );
+}
+
+#[test]
+fn an_extended_interface_must_also_be_listed() {
+    check_error(
+        "interface Comparable {\n    fn compareTo(other: Self): Int\n}\n\
+         interface Ordered : Comparable {\n    fn rank(): Int\n}\n\
+         class Version(val major: Int) : Ordered {\n    fn compareTo(other: Version): Int = 0\n    fn rank(): Int = 0\n}\n\
+         fn main() {}\n",
+        "which `Version` does not implement",
+    );
+}
+
+#[test]
+fn listing_both_an_interface_and_what_it_extends_is_accepted() {
+    check_ok(
+        "interface Comparable {\n    fn compareTo(other: Self): Int\n}\n\
+         interface Ordered : Comparable {\n    fn rank(): Int\n}\n\
+         class Version(val major: Int) : Ordered, Comparable {\n    fn compareTo(other: Version): Int = 0\n    fn rank(): Int = 0\n}\n\
+         fn main() {}\n",
+    );
+}
+
+#[test]
+fn a_type_implements_an_interface_at_most_once() {
+    check_error(
+        "interface Sized {\n    val size: Int\n}\n\
+         class Buffer(val size: Int) : Sized, Sized\n\
+         fn main() {}\n",
+        "implements `Sized` more than once",
+    );
+}
+
+#[test]
+fn a_class_cannot_be_implemented_like_an_interface() {
+    check_error(
+        "class Base(val x: Int)\n\
+         class Derived(val y: Int) : Base\n\
+         fn main() {}\n",
+        "base classes are not supported by this compiler yet",
+    );
+}
+
+#[test]
+fn an_implementing_class_is_still_an_ordinary_class() {
+    // Conformance is a check, not a representation: the class keeps its
+    // fields, its constructor and its methods, so it lowers as it did before.
+    let analysis = check_ok(
+        "interface Sized {\n    val size: Int\n}\n\
+         class Buffer(val size: Int) : Sized {\n    fn doubled(): Int = size * 2\n}\n\
+         fn main() {\n    val b = Buffer(4)\n    println(b.doubled())\n}\n",
+    );
+    let buffer = &analysis.classes[0];
+    assert_eq!(buffer.fields.len(), 1);
+    assert_eq!(buffer.primary_count, 1);
+    assert_eq!(buffer.methods.len(), 1);
 }
 
 // --- classes ---------------------------------------------------------------

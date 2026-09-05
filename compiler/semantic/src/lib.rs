@@ -24,9 +24,16 @@ mod scope;
 
 pub use analysis::{
     Analysis, ClassId, ClassInfo, ConstId, ConstInfo, ConstValue, EnumCaseInfo, EnumId, EnumInfo,
-    FieldInfo, FunctionId, FunctionInfo, LocalId, LocalInfo, MethodInfo, ModuleId, PropertyInfo,
-    Resolution, TestInfo,
+    FieldInfo, FunctionId, FunctionInfo, InterfaceId, InterfaceInfo, InterfaceMethod,
+    InterfaceProperty, LocalId, LocalInfo, MethodInfo, ModuleId, PropertyInfo, Resolution, TestInfo,
 };
+
+/// The name of the type an interface's members stand for.
+///
+/// It is an ordinary identifier to the lexer, so nothing outside an interface
+/// or a member implementing one puts it in the type scope — which is what
+/// makes `Self` elsewhere a resolution failure rather than a parse error.
+pub const SELF_TYPE_NAME: &str = "Self";
 
 /// The name the receiver of a method is bound to.
 ///
@@ -112,6 +119,7 @@ pub fn analyze_program(modules: &[ModuleInput], sink: &mut DiagnosticSink) -> An
     checker.module_names = vec![HashMap::new(); modules.len()];
     checker.module_types = vec![HashMap::new(); modules.len()];
     checker.module_enums = vec![HashMap::new(); modules.len()];
+    checker.module_interfaces = vec![HashMap::new(); modules.len()];
     checker.exported = vec![HashSet::new(); modules.len()];
 
     for (index, module) in modules.iter().enumerate() {
@@ -129,6 +137,14 @@ pub fn analyze_program(modules: &[ModuleInput], sink: &mut DiagnosticSink) -> An
         }
         checker.collect_items(module.ast);
         checker.module_names[index] = checker.scopes.take_top();
+    }
+
+    // Conformance is checked only once every signature in every module is
+    // resolved: a class may implement an interface declared below it, or in a
+    // module that imports this one's types.
+    for (index, module) in modules.iter().enumerate() {
+        checker.current_module = ModuleId(index as u32);
+        checker.check_conformance(module.ast);
     }
 
     checker.check_imports(modules);
@@ -164,6 +180,7 @@ struct Checker<'sink> {
     constants: Vec<ConstInfo>,
     classes: Vec<ClassInfo>,
     enums: Vec<EnumInfo>,
+    interfaces: Vec<InterfaceInfo>,
     tests: Vec<TestInfo>,
     /// The module whose declarations are being collected or checked.
     current_module: ModuleId,
@@ -184,6 +201,12 @@ struct Checker<'sink> {
     type_scope: Vec<HashMap<String, TypeId>>,
     /// Each module's own enum names.
     module_enums: Vec<HashMap<String, EnumId>>,
+    /// Each module's own interface names.
+    ///
+    /// Separate from `module_types` because an interface is not a type a value
+    /// can have: a name found here and nowhere else is an error at every use
+    /// except a supertype list.
+    module_interfaces: Vec<HashMap<String, InterfaceId>>,
     /// Each module's own type names.
     ///
     /// Types and values live in separate namespaces: `Point` as a type is
@@ -213,6 +236,7 @@ impl<'sink> Checker<'sink> {
             constants: Vec::new(),
             classes: Vec::new(),
             enums: Vec::new(),
+            interfaces: Vec::new(),
             tests: Vec::new(),
             current_module: ModuleId::ROOT,
             modules: vec![String::new()],
@@ -220,6 +244,7 @@ impl<'sink> Checker<'sink> {
             module_names: vec![HashMap::new()],
             module_types: vec![HashMap::new()],
             module_enums: vec![HashMap::new()],
+            module_interfaces: vec![HashMap::new()],
             type_scope: Vec::new(),
             narrowed: Vec::new(),
             exported: vec![HashSet::new()],
@@ -238,6 +263,7 @@ impl<'sink> Checker<'sink> {
             constants: self.constants,
             classes: self.classes,
             enums: self.enums,
+            interfaces: self.interfaces,
             modules: self.modules,
             tests: self.tests,
             entry: self.entry,
@@ -266,6 +292,34 @@ impl<'sink> Checker<'sink> {
     /// An enum declared by the module being checked.
     fn own_enum(&self, name: &str) -> Option<EnumId> {
         self.module_enums[self.current_module.0 as usize].get(name).copied()
+    }
+
+    /// An interface declared by the module being checked.
+    fn own_interface(&self, name: &str) -> Option<InterfaceId> {
+        self.module_interfaces[self.current_module.0 as usize].get(name).copied()
+    }
+
+    /// Resolves an interface name: this module's own, then what it imports.
+    fn lookup_interface(&self, name: &str) -> Option<InterfaceId> {
+        if let Some(id) = self.own_interface(name) {
+            return Some(id);
+        }
+        match name.split_once('.') {
+            Some((namespace, rest)) => {
+                let target = self.namespace(namespace)?;
+                self.export_interface(target, rest)
+            }
+            None => self.selective(name).and_then(|target| self.export_interface(target, name)),
+        }
+    }
+
+    /// An interface `target` exports under `name`.
+    fn export_interface(&self, target: ModuleId, name: &str) -> Option<InterfaceId> {
+        let index = target.0 as usize;
+        if !self.exported[index].contains(name) {
+            return None;
+        }
+        self.module_interfaces[index].get(name).copied()
     }
 
     /// Resolves an enum name: this module's own, then what it imports.

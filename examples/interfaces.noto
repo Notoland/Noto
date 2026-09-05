@@ -1,0 +1,78 @@
+// Interfaces in Noto 0.14, and what they promise.
+//
+//     noto test examples/interfaces.noto
+//     noto run examples/interfaces.noto
+//
+// An interface names the members a type promises to provide. Conformance is
+// nominal and declared where the type is declared, so "does Version implement
+// Comparable?" is answered by reading Version's first line. The reasoning, and
+// what is still missing, is in docs/rfcs/0003-interfaces-and-bounds.md.
+//
+// What this file does NOT show, because it does not exist yet: a bound like
+// `fn largest<T: Comparable>(..)`. Until bounds land, an interface is a
+// promise the checker enforces at the declaration and nothing calls through.
+
+/// Two values of the same type, ordered.
+///
+/// `Self` is the implementing type, so a `Version` compares to a `Version`
+/// and never to a `Rect`.
+export interface Comparable {
+    fn compareTo(other: Self): Int
+}
+
+/// Something that knows how big it is.
+export interface Sized {
+    val size: Int
+}
+
+export class Version(val major: Int, val minor: Int): Comparable {
+    export fn compareTo(other: Version): Int {
+        if major != other.major { return major - other.major }
+        return minor - other.minor
+    }
+
+    export fn text(): String = "${major}.${minor}"
+}
+
+/// A type may promise more than one thing.
+export class Buffer(val size: Int): Comparable, Sized {
+    export fn compareTo(other: Buffer): Int = size - other.size
+}
+
+test "an implementer's method is an ordinary method" {
+    val a = Version(1, 4)
+    val b = Version(1, 9)
+    assert(a.compareTo(b) < 0)
+    assert(b.compareTo(a) > 0)
+    assert(a.compareTo(Version(1, 4)) == 0)
+}
+
+test "the major number wins over the minor one" {
+    assert(Version(2, 0).compareTo(Version(1, 99)) > 0)
+}
+
+test "a class can implement two interfaces" {
+    val small = Buffer(8)
+    val large = Buffer(64)
+    assert(small.compareTo(large) < 0)
+    // `size` satisfies Sized by being an ordinary field.
+    assert(small.size == 8)
+}
+
+test "conformance costs nothing at runtime" {
+    // Buffer is laid out exactly as it would be without the interfaces: one
+    // field, at offset zero. Nothing is stored to say what it implements.
+    assert(Buffer(3).size == 3)
+}
+
+fn main() {
+    val current = Version(0, 14)
+    val next = Version(0, 15)
+    println("${current.text()} -> ${next.text()}")
+
+    if current.compareTo(next) < 0 {
+        println("ainda falta chegar em ${next.text()}")
+    }
+
+    println("buffer de ${Buffer(64).size} bytes")
+}

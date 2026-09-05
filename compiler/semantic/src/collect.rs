@@ -25,6 +25,7 @@ impl Checker<'_> {
             match &item.kind {
                 ItemKind::TypeDecl(decl) => self.declare_class(item, decl),
                 ItemKind::Enum(decl) => self.declare_enum(item, decl),
+                ItemKind::Interface(decl) => self.declare_interface(item, decl),
                 _ => {}
             }
         }
@@ -134,6 +135,314 @@ impl Checker<'_> {
         self.module_names[module].insert(name, Resolution::Enum(id));
     }
 
+    /// Registers an interface name.
+    ///
+    /// An interface goes in a namespace of its own, not among the types: no
+    /// value ever has one, so finding the name here and nowhere else is what
+    /// makes `val c: Comparable` an error with something useful to say. It
+    /// owns a [`DefId`](noto_types::DefId) anyway, because `Self` inside its
+    /// body is type parameter 0 of that def — which lets conformance reuse the
+    /// substitution the generics work already built.
+    fn declare_interface(&mut self, item: &Item, decl: &noto_ast::InterfaceItem) {
+        if let Some(param) = decl.type_params.first() {
+            self.sink.emit(
+                Diagnostic::error(
+                    codes::UNSUPPORTED_CONSTRUCT,
+                    "generic interfaces are not supported by this compiler yet",
+                )
+                .with_primary(param.span, "not implemented in Noto 0.14")
+                .with_note(
+                    "a type could implement `Into<Int>` and `Into<String>` both, and \
+                     which one a bound picks is left open by RFC 0003",
+                ),
+            );
+            return;
+        }
+
+        let name = decl.name.name.clone();
+        if self.own_type(&name).is_some()
+            || self.own_enum(&name).is_some()
+            || self.own_interface(&name).is_some()
+        {
+            self.sink.emit(
+                Diagnostic::error(
+                    codes::DUPLICATE_NAME,
+                    format!("`{name}` is declared more than once"),
+                )
+                .with_primary(decl.name.span, "redeclared here"),
+            );
+            return;
+        }
+
+        let id = crate::analysis::InterfaceId(self.interfaces.len() as u32);
+        let qualified = self.qualify(&name);
+        let def = self.store.declare(qualified, noto_types::DefKind::Interface);
+        let self_ty = self.store.intern(Type::Parameter {
+            def,
+            index: 0,
+            name: crate::SELF_TYPE_NAME.to_string(),
+        });
+        self.interfaces.push(crate::analysis::InterfaceInfo {
+            name: name.clone(),
+            module: self.current_module,
+            is_exported: item.modifiers.is_exported,
+            // Resolved in the next pass, once every interface name exists.
+            extends: Vec::new(),
+            methods: Vec::new(),
+            properties: Vec::new(),
+            def,
+            self_ty,
+            span: item.span,
+        });
+
+        let module = self.current_module.0 as usize;
+        self.module_interfaces[module].insert(name.clone(), id);
+        if item.modifiers.is_exported {
+            self.exported[module].insert(name);
+        }
+    }
+
+    /// Resolves the members an interface requires.
+    ///
+    /// Only abstract members are read. A body here would be a default an
+    /// implementer inherits, and calling one means dispatching through a
+    /// witness, which arrives with bounds; accepting the body now would mean
+    /// type checking a call on a `Self` that has no members yet.
+    fn collect_interface(&mut self, decl: &noto_ast::InterfaceItem) {
+        let Some(id) = self.own_interface(&decl.name.name) else {
+            // `declare_interface` reported why this is not an interface.
+            return;
+        };
+        let index = id.0 as usize;
+        let self_ty = self.interfaces[index].self_ty;
+
+        let mut extends: Vec<crate::analysis::InterfaceId> = Vec::new();
+        for supertype in &decl.interfaces {
+            let Some(parent) = self.resolve_interface(supertype) else { continue };
+            if parent == id {
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::UNSUPPORTED_CONSTRUCT,
+                        format!("`{}` cannot extend itself", decl.name.name),
+                    )
+                    .with_primary(supertype.span, "this names the interface being declared"),
+                );
+                continue;
+            }
+            if !extends.contains(&parent) {
+                extends.push(parent);
+            }
+        }
+        self.interfaces[index].extends = extends;
+
+        // `Self` is in scope for every signature in the body and nowhere else.
+        self.type_scope
+            .push(std::collections::HashMap::from([(
+                crate::SELF_TYPE_NAME.to_string(),
+                self_ty,
+            )]));
+
+        let mut properties: Vec<crate::analysis::InterfaceProperty> = Vec::new();
+        for property in &decl.properties {
+            let name = property.name.name.clone();
+            if let Some(default) = &property.default {
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::INTERFACE_HAS_STORAGE,
+                        format!("`{}.{name}` cannot have an initialiser", decl.name.name),
+                    )
+                    .with_primary(default.span, "an interface has no storage to put this in")
+                    .with_help("declare the requirement — `val name: Int` — and let each implementer store it"),
+                );
+                continue;
+            }
+            if property.getter.as_ref().is_some_and(|get| get.body.is_some())
+                || property.setter.as_ref().is_some_and(|set| set.body.is_some())
+            {
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::UNSUPPORTED_CONSTRUCT,
+                        "default accessors on an interface property are not supported by this compiler yet",
+                    )
+                    .with_primary(property.span, "not implemented in Noto 0.14")
+                    .with_note("reaching one means dispatching through a witness, which arrives with bounds"),
+                );
+                continue;
+            }
+
+            let ty = match &property.ty {
+                Some(ty) => self.resolve_type(ty),
+                None => {
+                    self.sink.emit(
+                        Diagnostic::error(
+                            codes::CANNOT_INFER,
+                            format!("`{name}` needs a declared type"),
+                        )
+                        .with_primary(property.span, "an interface has no value to infer one from"),
+                    );
+                    self.store.error()
+                }
+            };
+
+            if let Some(previous) = properties.iter().find(|seen| seen.name == name) {
+                let previous = previous.span;
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::DUPLICATE_NAME,
+                        format!("`{}.{name}` is required more than once", decl.name.name),
+                    )
+                    .with_primary(property.name.span, "required again here")
+                    .with_secondary(previous, "first required here"),
+                );
+                continue;
+            }
+
+            properties.push(crate::analysis::InterfaceProperty {
+                name,
+                ty,
+                is_mutable: property.kind == noto_ast::LetKind::Var,
+                span: property.span,
+            });
+        }
+
+        let mut methods: Vec<crate::analysis::InterfaceMethod> = Vec::new();
+        for member in &decl.methods {
+            let ItemKind::Fn(function) = &member.kind else { continue };
+            let name = function.name.name.clone();
+
+            if let Some(receiver) = &function.receiver {
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::UNSUPPORTED_CONSTRUCT,
+                        "an interface method already has a receiver",
+                    )
+                    .with_primary(receiver.span, "remove the explicit receiver")
+                    .with_note("its receiver is `Self`, whatever type implements the interface"),
+                );
+                continue;
+            }
+            if let Some(param) = function.type_params.first() {
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::UNSUPPORTED_CONSTRUCT,
+                        "generic methods are not supported by this compiler yet",
+                    )
+                    .with_primary(param.span, "not implemented in Noto 0.14"),
+                );
+                continue;
+            }
+            if let Some(body) = &function.body {
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::UNSUPPORTED_CONSTRUCT,
+                        "default method bodies are not supported by this compiler yet",
+                    )
+                    .with_primary(body.span, "not implemented in Noto 0.14")
+                    .with_note(
+                        "a default is reached through a witness, which arrives with bounds — RFC 0003",
+                    )
+                    .with_help("declare it without a body and let each implementer write it"),
+                );
+                continue;
+            }
+
+            let parameters: Vec<TypeId> = function
+                .params
+                .iter()
+                .map(|param| match &param.ty {
+                    Some(ty) => self.resolve_type(ty),
+                    None => {
+                        self.sink.emit(
+                            Diagnostic::error(
+                                codes::CANNOT_INFER,
+                                format!("parameter `{}` needs a declared type", param.name.name),
+                            )
+                            .with_primary(param.span, "no type to infer from here"),
+                        );
+                        self.store.error()
+                    }
+                })
+                .collect();
+            let result = match &function.result {
+                Some(ty) => self.resolve_type(ty),
+                None => self.store.unit(),
+            };
+
+            if let Some(previous) = methods.iter().find(|seen| seen.name == name) {
+                let previous = previous.span;
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::DUPLICATE_NAME,
+                        format!("`{}.{name}` is required more than once", decl.name.name),
+                    )
+                    .with_primary(function.name.span, "required again here")
+                    .with_secondary(previous, "first required here"),
+                );
+                continue;
+            }
+
+            methods.push(crate::analysis::InterfaceMethod {
+                name,
+                parameters,
+                result,
+                span: member.span,
+            });
+        }
+
+        self.type_scope.pop();
+        self.interfaces[index].properties = properties;
+        self.interfaces[index].methods = methods;
+    }
+
+    /// Resolves a supertype list entry to the interface it names.
+    ///
+    /// Reports the two ways it can fail — naming nothing, and naming a class
+    /// or enum, which is inheritance rather than conformance.
+    fn resolve_interface(&mut self, ty: &TypeExpr) -> Option<crate::analysis::InterfaceId> {
+        let TypeExprKind::Named { path, arguments } = &ty.kind else {
+            self.sink.emit(
+                Diagnostic::error(codes::UNKNOWN_TYPE, "this is not an interface")
+                    .with_primary(ty.span, "only a named interface can be implemented"),
+            );
+            return None;
+        };
+        let name = path.to_dotted();
+        if let Some(argument) = arguments.first() {
+            self.sink.emit(
+                Diagnostic::error(
+                    codes::UNSUPPORTED_CONSTRUCT,
+                    "generic interfaces are not supported by this compiler yet",
+                )
+                .with_primary(argument.span, "not implemented in Noto 0.14"),
+            );
+            return None;
+        }
+        if let Some(id) = self.lookup_interface(&name) {
+            return Some(id);
+        }
+
+        // Naming a class or enum here is not a lookup failure: it is
+        // inheritance, which is a different feature and says so.
+        if self.lookup_type(&name).is_some() || self.lookup_enum(&name).is_some() {
+            self.sink.emit(
+                Diagnostic::error(
+                    codes::UNSUPPORTED_CONSTRUCT,
+                    "base classes are not supported by this compiler yet",
+                )
+                .with_primary(ty.span, "not implemented in Noto 0.14")
+                .with_note(format!("`{name}` is a type, and a type cannot be implemented"))
+                .with_help("only an `interface` can appear here"),
+            );
+            return None;
+        }
+
+        self.sink.emit(
+            Diagnostic::error(codes::UNKNOWN_TYPE, format!("cannot find interface `{name}`"))
+                .with_primary(ty.span, "not an interface in scope"),
+        );
+        None
+    }
+
     pub(crate) fn collect_items(&mut self, module: &Module) {
         for item in &module.items {
             match &item.kind {
@@ -141,10 +450,7 @@ impl Checker<'_> {
                 ItemKind::Const(constant) => self.collect_const(item, constant),
                 ItemKind::Test(test) => self.collect_test(test),
                 ItemKind::TypeDecl(decl) => self.collect_class_fields(decl),
-                // Interfaces, enums and imports parse today but are not yet
-                // given semantics; `noto check` reports them rather than
-                // silently accepting a program it cannot compile.
-                ItemKind::Interface(_) => self.report_unsupported(item),
+                ItemKind::Interface(decl) => self.collect_interface(decl),
                 ItemKind::Enum(decl) => self.collect_enum_fields(decl),
                 // Imports are resolved by the driver and checked separately;
                 // there is no signature to collect from one.
@@ -190,10 +496,10 @@ impl Checker<'_> {
                 );
             }
         }
-        if let Some(base) = decl.base.as_ref().or(decl.interfaces.first()) {
-            self.sink.emit(unsupported("base classes and interfaces", base.span));
-            return;
-        }
+        // The supertype list is not resolved here. The grammar cannot tell a
+        // base class from an interface — it parks the first entry in `base`
+        // and the rest in `interfaces` — so which of the two a name is only
+        // becomes knowable once every declaration is registered.
 
         let name = decl.name.name.clone();
         if let Some(existing) = self.own_type(&name) {
@@ -238,6 +544,7 @@ impl Checker<'_> {
             primary_count: 0,
             properties: Vec::new(),
             methods: Vec::new(),
+            interfaces: Vec::new(),
             init: None,
             ty,
             def,
@@ -838,19 +1145,199 @@ impl Checker<'_> {
         }
     }
 
-    fn report_unsupported(&mut self, item: &Item) {
-        let name = item.describe();
-        self.sink.emit(
-            Diagnostic::error(
-                codes::UNSUPPORTED_CONSTRUCT,
-                format!("`{name}` declarations are not supported by this compiler yet"),
-            )
-            .with_primary(item.span, "not implemented in Noto 0.14")
-            .with_note(
-                "the syntax is accepted so that tooling can read the whole language; \
-                 code generation for it lands in a later release",
-            ),
-        );
+    /// Checks every class against the interfaces it lists.
+    ///
+    /// Conformance is checked once, here, at the declaration and independent
+    /// of any use: a type implements an interface at most once, so there is no
+    /// overlap to resolve and nothing a call site can add.
+    pub(crate) fn check_conformance(&mut self, module: &Module) {
+        for item in &module.items {
+            let ItemKind::TypeDecl(decl) = &item.kind else { continue };
+            let Some(class) = self.own_type(&decl.name.name) else { continue };
+
+            let mut listed: Vec<(crate::analysis::InterfaceId, Span)> = Vec::new();
+            for supertype in decl.base.iter().chain(decl.interfaces.iter()) {
+                let Some(id) = self.resolve_interface(supertype) else { continue };
+                if let Some((_, previous)) = listed.iter().find(|(seen, _)| *seen == id) {
+                    let previous = *previous;
+                    let name = self.interfaces[id.0 as usize].name.clone();
+                    self.sink.emit(
+                        Diagnostic::error(
+                            codes::DUPLICATE_NAME,
+                            format!("`{}` implements `{name}` more than once", decl.name.name),
+                        )
+                        .with_primary(supertype.span, "listed again here")
+                        .with_secondary(previous, "first listed here"),
+                    );
+                    continue;
+                }
+                listed.push((id, supertype.span));
+            }
+
+            // An interface that extends another does not drag it in: the type
+            // says what it implements, so reading its first line answers the
+            // question without opening every interface it names.
+            for (id, span) in listed.clone() {
+                for parent in self.interfaces[id.0 as usize].extends.clone() {
+                    if listed.iter().any(|(seen, _)| *seen == parent) {
+                        continue;
+                    }
+                    let (child, parent) = (
+                        self.interfaces[id.0 as usize].name.clone(),
+                        self.interfaces[parent.0 as usize].name.clone(),
+                    );
+                    self.sink.emit(
+                        Diagnostic::error(
+                            codes::MISSING_INTERFACE_MEMBER,
+                            format!("`{child}` extends `{parent}`, which `{}` does not implement", decl.name.name),
+                        )
+                        .with_primary(span, format!("implementing `{child}` requires `{parent}` too"))
+                        .with_help(format!("list it as well: `: {child}, {parent}`")),
+                    );
+                }
+            }
+
+            for (id, span) in &listed {
+                self.check_interface_members(class, *id, *span);
+            }
+            self.classes[class.0 as usize].interfaces =
+                listed.into_iter().map(|(id, _)| id).collect();
+        }
+    }
+
+    /// Checks one class against one interface, with `Self` read as the class.
+    fn check_interface_members(
+        &mut self,
+        class: ClassId,
+        interface: crate::analysis::InterfaceId,
+        at: Span,
+    ) {
+        let class_name = self.classes[class.0 as usize].name.clone();
+        let class_ty = self.classes[class.0 as usize].ty;
+        let required = self.interfaces[interface.0 as usize].clone();
+        // `Self` is type parameter 0 of the interface, so reading it as the
+        // implementing type is one entry in the substitution the generics work
+        // already uses everywhere else.
+        let bindings = std::collections::HashMap::from([((required.def, 0u32), class_ty)]);
+
+        for method in &required.methods {
+            let Some(found) = self.classes[class.0 as usize].method(&method.name).cloned() else {
+                let missing = self.render_required(method, &bindings);
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::MISSING_INTERFACE_MEMBER,
+                        format!("`{class_name}` is missing `{}`, which `{}` requires", method.name, required.name),
+                    )
+                    .with_primary(at, format!("`{}` is not implemented here", required.name))
+                    .with_secondary(method.span, "required here")
+                    .with_help(format!("add `{missing}` to `{class_name}`")),
+                );
+                continue;
+            };
+
+            let function = &self.functions[found.function.0 as usize];
+            // A method's first parameter is its receiver; the interface names
+            // the ones after it.
+            let actual_params: Vec<TypeId> = function.parameters[1..]
+                .iter()
+                .map(|local| self.locals[local.0 as usize].ty)
+                .collect();
+            let actual_result = function.result;
+            let span = function.span;
+
+            let expected_params: Vec<TypeId> = method
+                .parameters
+                .iter()
+                .map(|ty| self.store.substitute(*ty, &bindings))
+                .collect();
+            let expected_result = self.store.substitute(method.result, &bindings);
+
+            if actual_params == expected_params && actual_result == expected_result {
+                continue;
+            }
+            let expected = self.render_signature(&method.name, &expected_params, expected_result);
+            let actual = self.render_signature(&method.name, &actual_params, actual_result);
+            self.sink.emit(
+                Diagnostic::error(
+                    codes::INTERFACE_SIGNATURE_MISMATCH,
+                    format!("`{class_name}.{}` does not match what `{}` requires", method.name, required.name),
+                )
+                .with_primary(span, format!("declared as `{actual}`"))
+                .with_secondary(method.span, format!("required as `{expected}`")),
+            );
+        }
+
+        for property in &required.properties {
+            let expected = self.store.substitute(property.ty, &bindings);
+            let found = self.classes[class.0 as usize]
+                .field(&property.name)
+                .map(|(_, field)| (field.ty, field.is_mutable, field.span))
+                .or_else(|| {
+                    self.classes[class.0 as usize]
+                        .property(&property.name)
+                        .map(|(_, found)| (found.ty, found.is_mutable, found.span))
+                });
+
+            let Some((actual, is_mutable, span)) = found else {
+                let keyword = if property.is_mutable { "var" } else { "val" };
+                let rendered = self.store.render(expected);
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::MISSING_INTERFACE_MEMBER,
+                        format!("`{class_name}` is missing `{}`, which `{}` requires", property.name, required.name),
+                    )
+                    .with_primary(at, format!("`{}` is not implemented here", required.name))
+                    .with_secondary(property.span, "required here")
+                    .with_help(format!("add `{keyword} {}: {rendered}` to `{class_name}`", property.name)),
+                );
+                continue;
+            };
+
+            if actual != expected {
+                let (expected, actual) = (self.store.render(expected), self.store.render(actual));
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::INTERFACE_SIGNATURE_MISMATCH,
+                        format!("`{class_name}.{}` does not match what `{}` requires", property.name, required.name),
+                    )
+                    .with_primary(span, format!("declared `{actual}`"))
+                    .with_secondary(property.span, format!("required `{expected}`")),
+                );
+                continue;
+            }
+            // A `var` requirement promises the member can be written; a `val`
+            // that satisfied it would break that promise at every use.
+            if property.is_mutable && !is_mutable {
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::INTERFACE_SIGNATURE_MISMATCH,
+                        format!("`{class_name}.{}` is a `val`, and `{}` requires a `var`", property.name, required.name),
+                    )
+                    .with_primary(span, "declared `val` here")
+                    .with_secondary(property.span, "required `var` here"),
+                );
+            }
+        }
+    }
+
+    /// Renders a required method the way it would be written on the
+    /// implementing type.
+    fn render_required(
+        &mut self,
+        method: &crate::analysis::InterfaceMethod,
+        bindings: &std::collections::HashMap<(noto_types::DefId, u32), TypeId>,
+    ) -> String {
+        let parameters: Vec<TypeId> =
+            method.parameters.iter().map(|ty| self.store.substitute(*ty, bindings)).collect();
+        let result = self.store.substitute(method.result, bindings);
+        self.render_signature(&method.name, &parameters, result)
+    }
+
+    /// Renders `fn name(A, B): C` for a diagnostic.
+    fn render_signature(&self, name: &str, parameters: &[TypeId], result: TypeId) -> String {
+        let parameters: Vec<String> =
+            parameters.iter().map(|ty| self.store.render(*ty)).collect();
+        format!("fn {name}({}): {}", parameters.join(", "), self.store.render(result))
     }
 
     fn collect_fn(&mut self, item: &Item, function: &FnItem) {
@@ -1369,6 +1856,39 @@ impl Checker<'_> {
         if let Some(id) = self.lookup_enum(name) {
             return self.enums[id.0 as usize].ty;
         }
+        // An interface is not a value type: naming one here is a real mistake
+        // with a concrete fix, not a name that failed to resolve.
+        if self.lookup_interface(name).is_some() {
+            self.sink.emit(
+                Diagnostic::error(
+                    codes::INTERFACE_NOT_A_VALUE,
+                    format!("`{name}` is an interface, not a value type"),
+                )
+                .with_primary(span, "no value has this type")
+                .with_note(
+                    "a value would have to carry a witness alongside its data, and every \
+                     value in Noto is one machine word",
+                )
+                .with_help(format!(
+                    "take it as a bounded type parameter instead — `fn f<T: {name}>(x: T)`"
+                )),
+            );
+            return self.store.error();
+        }
+        // `Self` is put in scope by the interface being collected and by
+        // nothing else, so reaching here means it was written outside one.
+        if name == crate::SELF_TYPE_NAME {
+            self.sink.emit(
+                Diagnostic::error(
+                    codes::SELF_OUTSIDE_INTERFACE,
+                    "`Self` means the implementing type, and there is none here",
+                )
+                .with_primary(span, "not inside an interface")
+                .with_help("name the type itself, or move this into an `interface`"),
+            );
+            return self.store.error();
+        }
+
         match name {
             "String" => self.store.string(),
             "Unit" => self.store.unit(),

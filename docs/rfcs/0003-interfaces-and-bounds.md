@@ -1,6 +1,7 @@
 # RFC 0003: Interfaces and bounds
 
-- **Status:** Draft — **open question, not decided**
+- **Status:** Partially implemented — declarations and conformance are in;
+  bounds and witnesses are not. See [Implementation status](#implementation-status).
 - **Discussion:** (open a PR to discuss)
 
 ## Summary
@@ -352,39 +353,94 @@ narrow rule allowed.
 - **Teaching.** "Generics are free" becomes "generics are free unless bounded,
   and then it is one pointer per bound" — a caveat where there was none.
 
-## Unresolved questions
+## Decided
+
+These were open when this RFC was written and are now settled. Each is
+enforced by a test.
+
+2. **Generic interfaces: out of scope.** `interface Into<T>` is rejected with
+   `NOTO0500`. Allowing it turns "a type implements an interface at most once"
+   into "at most once per type argument tuple", which brings back exactly the
+   coherence questions this RFC was written to avoid. It can be added later
+   without invalidating anything the narrow rule allowed.
+
+3. **Operators do not desugar.** `a < b` on a bounded `T: Comparable` is *not*
+   `a.compareTo(b) < 0`. You write `a.lessThan(b)`. Noto has been strict about
+   an operator meaning one thing — no implicit numeric conversion, bitwise
+   binding tighter than comparison — and making `<` mean a method call when
+   and only when a bound is in scope would put that meaning somewhere the
+   reader of the call cannot see. Loosening this later is possible; tightening
+   it back would not be.
+
+6. **A default method may read a property the interface requires.** That is
+   most of what defaults are for. The consequence is that a witness carries
+   property accessors as well as method pointers.
+
+7. **`Self` is legal in parameter and result position.** A default body may
+   not construct a `Self`: an interface cannot name the implementer's
+   constructor.
+
+## Still unresolved
 
 Each needs an answer before this RFC is `Implemented`.
 
 1. **Witness representation.** A table of function pointers (simple, one
    indirection per call) versus specialising the common single-method case
    into a bare function pointer. Start with the table; measure.
-2. **Generic interfaces.** `interface Into<T> { fn into(): T }` — the parser
-   accepts `interface Name<T>`. Does a type implement `Into<String>` and
-   `Into<Int>` both? If so the "at most once" rule becomes "at most once per
-   type argument tuple" and coherence questions creep back.
-3. **Operator interfaces.** Does `a < b` on a bounded `T: Comparable` desugar
-   to `a.compareTo(b) < 0`? Convenient, but it makes an operator's meaning
-   depend on a bound, and Noto has been strict about operators meaning one
-   thing.
 4. **Standard interfaces the compiler knows by name.** `Eq`, `Ord`, `Hashable`
    — does the compiler special-case them (for `==`, for `when`, for `data
    class` derivation), or are they ordinary library interfaces? This decides
    how `data class` gets its equality.
 5. **Bounds referencing the enclosing parameters.** `<T, U: Container<T>>` —
    allowed? It is the point where bound resolution needs its own fixpoint.
-6. **Default method visibility of other members.** May a default method read a
-   property the interface requires (`val size`)? Proposed yes — that is most
-   of their value — which means the witness must also carry property accessors.
-7. **`Self` in a return position** (`fn plus(other: Self): Self`) through a
-   witness call: the result is a `T`, which is fine, but a default method
-   returning `Self` and calling a constructor is not — an interface cannot
-   name the implementer's constructor. Probably: `Self` is legal in parameter
-   and result position but a default body may not construct a `Self`.
+   In scope for the bounds work, not deferred, but not yet designed.
 8. **Interaction with the memory model (RFC 0001).** A witness is static for
    the function case but a per-object field for the bounded-class case. If
    objects gain destructors, does a witness field participate? It should not —
    it points at static data — but that needs stating.
+
+## Implementation status
+
+Landed, checker only — `noto-semantic`, plus `DefKind::Interface` and the
+diagnostic codes:
+
+- `interface` declarations with abstract method and property requirements
+- `Self`, as type parameter 0 of the interface's own def, so that reading it
+  as the implementing type is one entry in the substitution the generics work
+  already uses. `Self` anywhere else is `NOTO0416`
+- nominal conformance checked once at the class, against every interface it
+  lists, with `NOTO0411` for a missing member and `NOTO0412` for one whose
+  signature does not match
+- an interface that extends another must have that other listed at the
+  implementing type too; nothing is synthesised
+- `NOTO0414` for an interface named where a value type is expected, and
+  `NOTO0415` for a body that tries to store something
+
+This slice needs no lowering and emits no code: with abstract members only, an
+interface declaration compiles to nothing and an implementing class is laid
+out exactly as it was before. `examples/interfaces.noto` builds to a native
+binary and runs.
+
+Not yet landed:
+
+- **bounds** (`<T: Comparable>`), and `NOTO0413` for a type argument that does
+  not satisfy one. Still rejected with `NOTO0500`
+- **witnesses** — no dispatch through a bound exists, so nothing calls an
+  interface member except through the concrete type
+- **default method bodies.** Rejected with `NOTO0500`: reaching one means
+  dispatching through a witness. This is why `has_default` is not yet recorded
+- **built-in conformances for the primitives** (`Int: Comparable`, ...)
+- **interfaces on an enum.** Still rejected, because an enum cannot have
+  methods at all yet
+
+### A formatting note
+
+The prose above writes `class Version(..) : Comparable`, with a space before
+the colon. The formatter writes `class Version(..): Comparable`, because
+`docs/design/formatter.md` says *never a space before `:`* and a supertype
+list was never exercised before this landed. The formatter follows the rule
+that is written down; these examples do not. Whether a supertype colon
+deserves an exception is a formatter decision that nobody has made.
 
 ## What this RFC must not do
 

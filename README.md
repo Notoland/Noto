@@ -93,7 +93,10 @@ otherwise would be worse than refusing them until the memory model is
 settled. Fields are read with `.` and written with `.` when declared `var`. A method
 is compiled to a function taking the receiver first, so it spends one of the
 six argument registers and takes at most five parameters of its own.
-Inheritance, interfaces and generics are not implemented yet.
+A class may implement interfaces — `class Version(val major: Int): Comparable`
+— and the checker enforces every member they require, with `Self` read as the
+implementing type. Inheritance is not implemented, and neither are bounds, so
+nothing generic can call an interface member yet.
 
 Enums:
 
