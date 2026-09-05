@@ -3,12 +3,14 @@
 class Point(val x: Int, val y: Int)
 
 class Counter(var count: Int) {
+    // `count` is the receiver's: a member needs no `this.` unless something
+    // nearer holds the same name.
     fn bump() {
-        this.count += 1
+        count += 1
     }
 
     fn add(n: Int) {
-        this.count += n
+        count += n
     }
 }
 
@@ -18,18 +20,18 @@ class Counter(var count: Int) {
 class Segment(val from: Point, val to: Point) {
     val span: Int = distance(from.x, to.x) + distance(from.y, to.y)
 
-    val isPoint: Bool { get = this.span == 0 }
+    val isPoint: Bool { get = span == 0 }
 }
 
 class Line(val from: Point, val to: Point) {
-    // A method may call another method of the same class.
-    fn length(): Int = this.horizontal() + this.vertical()
+    // A method may call another method of the same class, bare.
+    fn length(): Int = horizontal() + vertical()
 
-    fn horizontal(): Int = distance(this.from.x, this.to.x)
+    fn horizontal(): Int = distance(from.x, to.x)
 
-    fn vertical(): Int = distance(this.from.y, this.to.y)
+    fn vertical(): Int = distance(from.y, to.y)
 
-    fn describe(): String = "(${this.from.x}, ${this.from.y}) -> (${this.to.x}, ${this.to.y})"
+    fn describe(): String = "(${from.x}, ${from.y}) -> (${to.x}, ${to.y})"
 }
 
 fn distance(from: Int, to: Int): Int {

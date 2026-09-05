@@ -10,11 +10,10 @@
 import strings { isSpace }
 
 class Counts(val lines: Int, val words: Int, val bytes: Int) {
-    export fn plus(other: Counts): Counts = Counts(
-        this.lines + other.lines,
-        this.words + other.words,
-        this.bytes + other.bytes
-    )
+    // A member of the receiver needs no `this.`: `lines` is this object's,
+    // and `other.lines` is the argument's.
+    export fn plus(other: Counts): Counts =
+        Counts(lines + other.lines, words + other.words, bytes + other.bytes)
 }
 
 /// Counts one document.

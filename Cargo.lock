@@ -4,7 +4,7 @@ version = 3
 
 [[package]]
 name = "noto-ast"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "noto-lexer",
  "noto-span",
@@ -12,7 +12,7 @@ dependencies = [
 
 [[package]]
 name = "noto-cli"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "noto-codegen",
  "noto-diagnostics",
@@ -25,7 +25,7 @@ dependencies = [
 
 [[package]]
 name = "noto-codegen"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "noto-diagnostics",
  "noto-ir",
@@ -36,21 +36,21 @@ dependencies = [
 
 [[package]]
 name = "noto-debugger"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "noto-span",
 ]
 
 [[package]]
 name = "noto-diagnostics"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "noto-span",
 ]
 
 [[package]]
 name = "noto-driver"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "noto-ast",
  "noto-codegen",
@@ -67,7 +67,7 @@ dependencies = [
 
 [[package]]
 name = "noto-formatter"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "noto-diagnostics",
  "noto-lexer",
@@ -76,7 +76,7 @@ dependencies = [
 
 [[package]]
 name = "noto-ir"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "noto-span",
  "noto-types",
@@ -84,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "noto-lexer"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "noto-diagnostics",
  "noto-span",
@@ -92,7 +92,7 @@ dependencies = [
 
 [[package]]
 name = "noto-linter"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "noto-ast",
  "noto-diagnostics",
@@ -102,7 +102,7 @@ dependencies = [
 
 [[package]]
 name = "noto-lower"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "noto-ast",
  "noto-diagnostics",
@@ -116,7 +116,7 @@ dependencies = [
 
 [[package]]
 name = "noto-lsp"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "noto-diagnostics",
  "noto-driver",
@@ -125,7 +125,7 @@ dependencies = [
 
 [[package]]
 name = "noto-optimizer"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "noto-ir",
  "noto-span",
@@ -133,7 +133,7 @@ dependencies = [
 
 [[package]]
 name = "noto-parser"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "noto-ast",
  "noto-diagnostics",
@@ -143,11 +143,11 @@ dependencies = [
 
 [[package]]
 name = "noto-runtime"
-version = "0.10.0"
+version = "0.11.0"
 
 [[package]]
 name = "noto-semantic"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "noto-ast",
  "noto-diagnostics",
@@ -158,11 +158,11 @@ dependencies = [
 
 [[package]]
 name = "noto-span"
-version = "0.10.0"
+version = "0.11.0"
 
 [[package]]
 name = "noto-test-runner"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "noto-codegen",
  "noto-diagnostics",
@@ -174,7 +174,7 @@ dependencies = [
 
 [[package]]
 name = "noto-types"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "noto-span",
 ]

@@ -152,13 +152,15 @@ pub fn run(program: &mut Program, options: &TestOptions) -> Report {
 /// Creates a directory this run alone writes into.
 ///
 /// The process id is not enough on its own: one process can run tests more
-/// than once, and the clock reading separates those runs.
+/// than once, and two runs at once — which is what a parallel test harness
+/// does — must not share a directory. A counter separates them; a clock
+/// reading would not, because two runs can start inside one tick of it.
 fn scratch_directory(base: &Path) -> Result<PathBuf, String> {
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_nanos())
-        .unwrap_or(0);
-    let directory = base.join(format!("noto-test-{}-{stamp}", std::process::id()));
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    let run = NEXT.fetch_add(1, Ordering::Relaxed);
+    let directory = base.join(format!("noto-test-{}-{run}", std::process::id()));
     std::fs::create_dir_all(&directory)
         .map(|()| directory.clone())
         .map_err(|error| format!("cannot create `{}`: {error}", directory.display()))

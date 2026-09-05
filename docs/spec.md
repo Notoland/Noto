@@ -1,9 +1,9 @@
-# The Noto language specification — 0.10
+# The Noto language specification — 0.11
 
 The language as implemented, section by section. Everything marked **not
 implemented** parses (the parser covers the full grammar) but is rejected
 during semantic analysis or lowering with `NOTO0500 … not implemented in
-Noto 0.10`. Nothing is silently accepted and miscompiled.
+Noto 0.11`. Nothing is silently accepted and miscompiled.
 
 This document describes behaviour; syntax details that deserve their own
 rationale live in [design/](design/).
@@ -98,8 +98,12 @@ class Counter(var count: Int) {
 }
 ```
 
-`this` names the receiver. A method is an ordinary function with the
-receiver as its first parameter — that is what it is compiled to, under the
+`this` names the receiver, and a bare name means the receiver's member when
+nothing nearer holds it: `width * height` inside a method reads two fields.
+A local, a parameter and a declaration all win over a member, so nothing a
+method writes can be shadowed by a field added later.
+
+A method is an ordinary function with the receiver as its first parameter — that is what it is compiled to, under the
 name `Class.method` — so **the receiver spends one of the six argument
 registers**: a method takes at most five parameters of its own.
 
@@ -145,9 +149,14 @@ arrives in the setter under the name `value`. A `val` property may not have a
 setter, and a property with custom accessors may not also have an initialiser:
 that value could only be reached through storage the accessors cannot name.
 
+Reading a member of something nullable takes `?.`, which produces a nullable
+result: `p?.x` is an `Int?` when `p` is a `Point?`, and null when `p` is. On
+a receiver that cannot be null it is a warning, because the check can never
+fail.
+
 Not implemented for classes: default values for constructor parameters,
-inheritance, interfaces, generics, method values, safe property access
-(`p?.x`), `data class` equality and printing. An object has no `toString`, so
+inheritance, interfaces, generics, method values, safe method calls
+(`p?.f()`), `data class` equality and printing. An object has no `toString`, so
 `println(p)` does not compile — print its fields, or give the class a method
 that builds a `String`.
 

@@ -23,13 +23,13 @@ Hello, Noto!
 
 ## Status
 
-**Noto is in early development.** Version 0.10 is a working compiler for a real
+**Noto is in early development.** Version 0.11 is a working compiler for a real
 subset of the language, not a finished product. The pipeline runs end to end:
 source becomes a native Linux x86-64 executable that you can run.
 
 What that means in practice:
 
-- **513 tests pass, zero failures, zero warnings.**
+- **521 tests pass, zero failures, zero warnings.**
 - Constructs that are not implemented yet are **rejected with a clear error**,
   never silently accepted and miscompiled.
 - The parser covers the whole language; the back end does not yet.

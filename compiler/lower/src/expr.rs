@@ -31,7 +31,9 @@ impl Builder<'_> {
                 self.lower_block(block).unwrap_or(Operand::Const(Const::Unit))
             }
             ExprKind::Call(call) => self.lower_call(call, expr),
-            ExprKind::Member { receiver, name, .. } => self.lower_member(receiver, name, expr),
+            ExprKind::Member { receiver, name, safe } => {
+                self.lower_member(receiver, name, *safe, expr)
+            }
             ExprKind::Return(value) => {
                 let value = value.as_deref().map(|value| self.lower_expr(value));
                 let result = self.function().result;
@@ -146,6 +148,35 @@ impl Builder<'_> {
     }
 
     fn lower_path(&mut self, expr: &Expr) -> Operand {
+        // A bare name that resolved to a member is `this.name`; the receiver
+        // is the method's first parameter.
+        if let Some(Resolution::Field { class, index }) = self.analysis.resolution(expr.id) {
+            let ty = crate::lower_type(
+                &self.analysis.store,
+                self.analysis.class(class).fields[index as usize].ty,
+            );
+            let object = self.receiver(expr.span);
+            return self.emit_value(ty, expr.span, |dest| InstKind::Load {
+                dest,
+                address: object,
+                offset: crate::field_offset(index),
+            });
+        }
+        if let Some(Resolution::Property { class, index }) = self.analysis.resolution(expr.id) {
+            let property = &self.analysis.class(class).properties[index as usize];
+            let (getter, ty) = (property.getter, property.ty);
+            let result = crate::lower_type(&self.analysis.store, ty);
+            let Some(callee) = self.func_id_of(getter) else {
+                return self.unsupported(expr.span, "reading this property");
+            };
+            let object = self.receiver(expr.span);
+            return self.emit_value(result, expr.span, |dest| InstKind::Call {
+                dest: Some(dest),
+                callee,
+                arguments: vec![object],
+            });
+        }
+
         match self.analysis.resolution(expr.id) {
             Some(Resolution::Local(local)) => self.read_local(local, expr.span),
             Some(Resolution::Const(id)) => {
@@ -883,10 +914,6 @@ impl Builder<'_> {
         op: Option<BinaryOp>,
         span: Span,
     ) -> Operand {
-        let ExprKind::Member { receiver, .. } = &target.kind else {
-            return self.unsupported(target.span, "assigning to this target");
-        };
-
         let property = &self.analysis.class(class).properties[index as usize];
         let (getter, setter_id, property_ty) = (property.getter, property.setter, property.ty);
         let Some(setter_id) = setter_id else {
@@ -898,7 +925,10 @@ impl Builder<'_> {
         };
 
         let ty = crate::lower_type(&self.analysis.store, property_ty);
-        let object = self.lower_expr(receiver);
+        let object = match &target.kind {
+            ExprKind::Member { receiver, .. } => self.lower_expr(receiver),
+            _ => self.receiver(span),
+        };
 
         let stored = match op {
             None => self.lower_expr(value),
@@ -952,16 +982,16 @@ impl Builder<'_> {
         op: Option<BinaryOp>,
         span: Span,
     ) -> Operand {
-        let ExprKind::Member { receiver, .. } = &target.kind else {
-            return self.unsupported(target.span, "assigning to this target");
-        };
-
         let ty = crate::lower_type(
             &self.analysis.store,
             self.analysis.class(class).fields[index as usize].ty,
         );
         let offset = crate::field_offset(index);
-        let object = self.lower_expr(receiver);
+        // Written through a receiver, or bare inside a method.
+        let object = match &target.kind {
+            ExprKind::Member { receiver, .. } => self.lower_expr(receiver),
+            _ => self.receiver(span),
+        };
 
         let stored = match op {
             None => self.lower_expr(value),
@@ -1008,14 +1038,18 @@ impl Builder<'_> {
         call: &noto_ast::CallExpr,
         expr: &Expr,
     ) -> Operand {
-        let ExprKind::Member { receiver, .. } = &call.callee.kind else {
-            return self.unsupported(expr.span, "calling this value");
-        };
         let Some(callee) = self.func_id_of(method) else {
             return self.unsupported(expr.span, "calling this method");
         };
 
-        let mut arguments = vec![self.lower_expr(receiver)];
+        // Written with a receiver, or bare inside a method, where the
+        // receiver is this method's own.
+        let object = match &call.callee.kind {
+            ExprKind::Member { receiver, .. } => self.lower_expr(receiver),
+            _ => self.receiver(expr.span),
+        };
+
+        let mut arguments = vec![object];
         arguments
             .extend(call.arguments.iter().map(|argument| self.lower_expr(&argument.value)));
 
@@ -1182,6 +1216,60 @@ impl Builder<'_> {
         }
 
         closure
+    }
+
+    /// Lowers `receiver?.something`: the receiver is evaluated once, and what
+    /// follows runs only when it is not null.
+    ///
+    /// The result is a slot rather than a value because two paths reach it,
+    /// and there is no phi in this IR — the slot is the join.
+    fn lower_safe(
+        &mut self,
+        receiver: &Expr,
+        ty: IrType,
+        span: Span,
+        read: impl FnOnce(&mut Self, Operand) -> Operand,
+    ) -> Operand {
+        let object = self.lower_expr(receiver);
+        let holder = self.add_temp_slot("safe$", ty);
+
+        let missing = self.new_block("safe_null");
+        let present = self.new_block("safe_value");
+        let join = self.new_block("safe_join");
+
+        let is_null = self.emit_value(IrType::Bool, span, |dest| InstKind::Binary {
+            dest,
+            op: BinOp::Eq,
+            left: object.clone(),
+            right: Operand::Const(Const::Null),
+        });
+        self.set_terminator(Terminator::Branch {
+            condition: is_null,
+            then_block: missing,
+            else_block: present,
+        });
+
+        self.switch_to(missing);
+        self.push(
+            InstKind::StoreLocal { slot: holder, value: Operand::Const(Const::Null) },
+            span,
+        );
+        self.set_terminator(Terminator::Jump(join));
+
+        self.switch_to(present);
+        let value = read(self, object);
+        self.push(InstKind::StoreLocal { slot: holder, value }, span);
+        self.set_terminator(Terminator::Jump(join));
+
+        self.switch_to(join);
+        self.emit_value(ty, span, |dest| InstKind::LoadLocal { dest, slot: holder })
+    }
+
+    /// The receiver of the method being lowered: its first parameter.
+    fn receiver(&mut self, span: Span) -> Operand {
+        let slot = self.function().parameters[0];
+        let ty = self.function().slot(slot).ty;
+        self.emit_value(ty, span, |dest| InstKind::LoadLocal { dest, slot })
     }
 
     /// Reads a local, whether it lives in this function or was captured.
@@ -1383,7 +1471,13 @@ impl Builder<'_> {
         object
     }
 
-    fn lower_member(&mut self, receiver: &Expr, _name: &noto_ast::Ident, expr: &Expr) -> Operand {
+    fn lower_member(
+        &mut self,
+        receiver: &Expr,
+        _name: &noto_ast::Ident,
+        safe: bool,
+        expr: &Expr,
+    ) -> Operand {
         // `Colour.Red` names a case; the receiver names a type and is never
         // evaluated. Without data the case *is* its tag. With data — even for
         // a case that carries none — the enum is a pointer, so this one still
@@ -1416,6 +1510,15 @@ impl Builder<'_> {
             let Some(callee) = self.func_id_of(getter) else {
                 return self.unsupported(expr.span, "reading this property");
             };
+            if safe {
+                return self.lower_safe(receiver, result, expr.span, |builder, object| {
+                    builder.emit_value(result, expr.span, |dest| InstKind::Call {
+                        dest: Some(dest),
+                        callee,
+                        arguments: vec![object],
+                    })
+                });
+            }
             let object = self.lower_expr(receiver);
             return self.emit_value(result, expr.span, |dest| InstKind::Call {
                 dest: Some(dest),
@@ -1429,11 +1532,21 @@ impl Builder<'_> {
                 &self.analysis.store,
                 self.analysis.class(class).fields[index as usize].ty,
             );
+            let offset = crate::field_offset(index);
+            if safe {
+                return self.lower_safe(receiver, ty, expr.span, |builder, object| {
+                    builder.emit_value(ty, expr.span, |dest| InstKind::Load {
+                        dest,
+                        address: object,
+                        offset,
+                    })
+                });
+            }
             let object = self.lower_expr(receiver);
             return self.emit_value(ty, expr.span, |dest| InstKind::Load {
                 dest,
                 address: object,
-                offset: crate::field_offset(index),
+                offset,
             });
         }
 

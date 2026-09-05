@@ -996,6 +996,77 @@ fn the_command_line_is_a_list_of_strings() {
     );
 }
 
+// --- the implicit receiver and safe access ------------------------------------
+
+#[test]
+fn a_bare_name_inside_a_method_is_the_receivers() {
+    check_ok(
+        "class Rect(val width: Int, val height: Int) {\n             fn area(): Int = width * height\n}\n         fn main() {\n    println(Rect(2, 3).area())\n}\n",
+    );
+}
+
+#[test]
+fn a_local_wins_over_a_field_of_the_same_name() {
+    // The field is an `Int` and the local a `String`, so returning it as an
+    // `Int` fails — which is only true if the local is what the name found.
+    check_error(
+        "class Box(val n: Int) {\n    fn shadowed(): Int {\n        val n = \"text\"\n        return n\n    }\n}\nfn main() {}\n",
+        "expected `Int`",
+    );
+    check_ok(
+        "class Box(val n: Int) {\n    fn parameter(n: Int): Int = n\n}\n         fn main() {\n    println(Box(1).parameter(2))\n}\n",
+    );
+}
+
+#[test]
+fn a_bare_call_inside_a_method_is_the_receivers() {
+    check_ok(
+        "class Rect(val side: Int) {\n             fn area(): Int = side * side\n    fn twice(): Int = area() * 2\n}\n         fn main() {\n    println(Rect(2).twice())\n}\n",
+    );
+}
+
+#[test]
+fn a_bare_field_may_be_assigned_inside_a_method() {
+    check_ok(
+        "class Counter(var count: Int) {\n    fn bump() {\n        count += 1\n    }\n}\n         fn main() {\n    val c = Counter(0)\n    c.bump()\n    println(c.count)\n}\n",
+    );
+}
+
+#[test]
+fn an_implicit_member_is_only_looked_for_inside_a_method() {
+    check_error(
+        "class Rect(val width: Int)\nfn main() {\n    println(width)\n}\n",
+        "cannot find `width`",
+    );
+}
+
+#[test]
+fn safe_access_produces_a_nullable_result() {
+    check_ok(
+        "class Point(val x: Int)\n         fn main() {\n    val p: Point? = null\n    println(p?.x ?: 0)\n}\n",
+    );
+    check_error(
+        "class Point(val x: Int)\n         fn main() {\n    val p: Point? = null\n    val n: Int = p?.x\n}\n",
+        "expected `Int`",
+    );
+}
+
+#[test]
+fn reading_a_member_of_something_nullable_needs_the_question_mark() {
+    check_error(
+        "class Point(val x: Int)\n         fn main() {\n    val p: Point? = null\n    println(p.x)\n}\n",
+        "cannot be read from a `Point?`",
+    );
+}
+
+#[test]
+fn safe_access_on_something_that_cannot_be_null_is_a_warning() {
+    let (_, messages) = check(
+        "class Point(val x: Int)\n         fn main() {\n    val p = Point(1)\n    println(p?.x ?: 0)\n}\n",
+    );
+    assert!(messages.iter().any(|m| m.contains("never null")), "{messages:?}");
+}
+
 // --- lambdas -----------------------------------------------------------------
 
 #[test]

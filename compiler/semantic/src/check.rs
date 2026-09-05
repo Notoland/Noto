@@ -273,7 +273,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "declarations inside a function body are not supported yet",
                     )
-                    .with_primary(stmt.span, "not implemented in Noto 0.10")
+                    .with_primary(stmt.span, "not implemented in Noto 0.11")
                     .with_help("move the declaration to the top level of the file"),
                 );
                 self.store.unit()
@@ -357,7 +357,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this pattern is not supported in a binding yet",
                     )
-                    .with_primary(pattern.span, "not implemented in Noto 0.10")
+                    .with_primary(pattern.span, "not implemented in Noto 0.11")
                     .with_help("bind a name, a tuple of names, or `_`"),
                 );
             }
@@ -384,7 +384,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         format!("cannot iterate over a `{rendered}` yet"),
                     )
-                    .with_primary(iterable.span, "not iterable in Noto 0.10")
+                    .with_primary(iterable.span, "not iterable in Noto 0.11")
                     .with_help("iterate over a range, as in `for i in 0..10`"),
                 );
                 self.store.error()
@@ -455,7 +455,7 @@ impl Checker<'_> {
                     let ty = self.check_expr_expecting(bound, int);
                     self.expect_assignable(ty, int, bound.span, None);
                 }
-                // Ranges exist only inside `for` and `when` in Noto 0.10; there
+                // Ranges exist only inside `for` and `when` in Noto 0.11; there
                 // is no first-class `Range` type to give them yet.
                 self.store.unit()
             }
@@ -476,7 +476,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this expression is not supported by this compiler yet",
                     )
-                    .with_primary(expr.span, "not implemented in Noto 0.10"),
+                    .with_primary(expr.span, "not implemented in Noto 0.11"),
                 );
                 self.store.error()
             }
@@ -505,6 +505,42 @@ impl Checker<'_> {
                 self.store.error()
             }
         }
+    }
+
+    /// Resolves a bare name against the receiver, when there is one.
+    ///
+    /// This is what makes `width` mean `this.width` inside a method. The
+    /// scopes are asked first everywhere it is called, so a local, a
+    /// parameter or a declaration always wins — a member never shadows
+    /// something written nearer.
+    fn implicit_member(&mut self, expr: &Expr, name: &str) -> Option<TypeId> {
+        let Some(Resolution::Local(receiver)) = self.scopes.lookup(crate::RECEIVER_NAME) else {
+            return None;
+        };
+        let receiver_ty = self.locals[receiver.0 as usize].ty;
+        let (class_id, class) = self.class_of(receiver_ty)?;
+
+        if let Some((index, field)) = class.field(name) {
+            let ty = field.ty;
+            self.record_resolution(expr.id, Resolution::Field { class: class_id, index });
+            return Some(ty);
+        }
+        if let Some((index, property)) = class.property(name) {
+            let ty = property.ty;
+            self.record_resolution(expr.id, Resolution::Property { class: class_id, index });
+            return Some(ty);
+        }
+        None
+    }
+
+    /// The method the receiver has under this name, if it has one.
+    fn implicit_method(&mut self, name: &str) -> Option<FunctionId> {
+        let Some(Resolution::Local(receiver)) = self.scopes.lookup(crate::RECEIVER_NAME) else {
+            return None;
+        };
+        let receiver_ty = self.locals[receiver.0 as usize].ty;
+        let (_, class) = self.class_of(receiver_ty)?;
+        class.method(name).map(|method| method.function)
     }
 
     /// Records that the function being checked reads a local from an
@@ -542,7 +578,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "an async lambda is not supported by this compiler yet",
                 )
-                .with_primary(expr.span, "not implemented in Noto 0.10"),
+                .with_primary(expr.span, "not implemented in Noto 0.11"),
             );
             return self.store.error();
         }
@@ -987,6 +1023,13 @@ impl Checker<'_> {
                 self.store.error()
             }
             None => {
+                // Inside a method, a bare name may be one of the receiver's
+                // members: `width` is `this.width` unless something nearer
+                // holds that name.
+                if let Some(ty) = self.implicit_member(expr, &name) {
+                    return ty;
+                }
+
                 // A builtin used as a value rather than called: report it as a
                 // name that exists but cannot be referenced on its own.
                 if !builtins::free_overloads(&name).is_empty() {
@@ -1169,7 +1212,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "`in` is not supported outside a `when` arm yet",
                     )
-                    .with_primary(span, "not implemented in Noto 0.10"),
+                    .with_primary(span, "not implemented in Noto 0.11"),
                 );
                 bool_ty
             }
@@ -1619,7 +1662,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this pattern is not supported by this compiler yet",
                     )
-                    .with_primary(pattern.span, "not implemented in Noto 0.10"),
+                    .with_primary(pattern.span, "not implemented in Noto 0.11"),
                 );
             }
         }
@@ -1779,7 +1822,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "explicit type arguments are not supported by this compiler yet",
                 )
-                .with_primary(expr.span, "not implemented in Noto 0.10"),
+                .with_primary(expr.span, "not implemented in Noto 0.11"),
             );
         }
 
@@ -1790,7 +1833,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "named arguments are not supported by this compiler yet",
                     )
-                    .with_primary(name.span, "not implemented in Noto 0.10")
+                    .with_primary(name.span, "not implemented in Noto 0.11")
                     .with_help("pass the arguments positionally"),
                 );
             }
@@ -1804,6 +1847,18 @@ impl Checker<'_> {
                 let overloads = builtins::free_overloads(&name);
                 if !overloads.is_empty() {
                     return self.check_builtin_call(expr, call, &name, &overloads);
+                }
+            }
+        }
+
+        // Inside a method, a bare call may be another method of the same
+        // receiver: `area()` is `this.area()`.
+        if let ExprKind::Path(path) = &call.callee.kind {
+            let name = path.to_dotted();
+            if self.lookup_value(&name).is_none() {
+                if let Some(function) = self.implicit_method(&name) {
+                    self.record_resolution(call.callee.id, Resolution::Method(function));
+                    return self.check_method_arguments(expr, call, function);
                 }
             }
         }
@@ -1858,7 +1913,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "safe calls are not supported by this compiler yet",
                     )
-                    .with_primary(expr.span, "not implemented in Noto 0.10"),
+                    .with_primary(expr.span, "not implemented in Noto 0.11"),
                 );
                 return self.store.error();
             }
@@ -2453,6 +2508,23 @@ impl Checker<'_> {
             return self.check_enum_case(expr, id, name);
         }
 
+        if safe {
+            let receiver_ty = self.check_expr(receiver);
+            if !self.store.is_nullable(receiver_ty)
+                && !self.store.get(receiver_ty).is_error()
+            {
+                let rendered = self.store.render(receiver_ty);
+                self.sink.emit(
+                    Diagnostic::warning(
+                        codes::NULLABLE_NOT_ALLOWED,
+                        format!("a `{rendered}` is never null"),
+                    )
+                    .with_primary(receiver.span, "this check can never fail")
+                    .with_help(format!("write `.{}` instead", name.name)),
+                );
+            }
+        }
+
         let receiver_ty = self.check_expr(receiver);
         let base = self.store.unwrap_nullable(receiver_ty);
 
@@ -2478,18 +2550,8 @@ impl Checker<'_> {
                 let class_name = class.name.clone();
                 if let Some((index, property)) = class.property(&name.name) {
                     let ty = property.ty;
-                    if safe {
-                        self.sink.emit(
-                            Diagnostic::error(
-                                codes::UNSUPPORTED_CONSTRUCT,
-                                "safe property access is not supported by this compiler yet",
-                            )
-                            .with_primary(expr.span, "not implemented in Noto 0.10"),
-                        );
-                        return self.store.error();
-                    }
                     self.record_resolution(expr.id, Resolution::Property { class: id, index });
-                    return ty;
+                    return if safe { self.store.nullable(ty) } else { ty };
                 }
                 let mut diagnostic = if class.method(&name.name).is_some() {
                     Diagnostic::error(
@@ -2512,20 +2574,10 @@ impl Checker<'_> {
                 return self.store.error();
             };
             let ty = field.ty;
-
-            if safe {
-                self.sink.emit(
-                    Diagnostic::error(
-                        codes::UNSUPPORTED_CONSTRUCT,
-                        "safe field access is not supported by this compiler yet",
-                    )
-                    .with_primary(expr.span, "not implemented in Noto 0.10"),
-                );
-                return self.store.error();
-            }
-
             self.record_resolution(expr.id, Resolution::Field { class: id, index });
-            return ty;
+            // Reading through `?.` may find nothing, so what comes out may be
+            // nothing either.
+            return if safe { self.store.nullable(ty) } else { ty };
         }
 
 
