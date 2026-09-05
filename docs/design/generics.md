@@ -45,16 +45,43 @@ lift it, and they need interfaces, which do not exist yet. Until then a
 generic function is a plumbing function, and that covers most of what a
 collection library is.
 
+## Classes are generic the same way
+
+```noto
+class Pair<A, B>(val first: A, val second: B) {
+    fn swapped(): Pair<B, A> = Pair(second, first)
+}
+```
+
+A class's type parameters are in scope for its fields, its properties and its
+methods, and `this` inside one is a `Pair<A, B>` — the class applied to its
+own parameters. Reading a field of a `Pair<Int, String>` substitutes them:
+the field is declared `A` and comes out an `Int`.
+
+Applied types are invariant: a `Box<Int>` is not a `Box<Any>`, for the reason
+a `[Int]` is not a `[Any]`.
+
+Erasure means one layout for every instantiation, which is already true of
+every object: a field is a word, whatever it holds.
+
 ## Type arguments are inferred
 
 There is no `first<Int>(xs)` syntax. The type arguments come from the
 argument types, by matching the declared parameter types against them:
 `[T]` against `[Int]` gives `T = Int`, `fn(T): U` against `fn(Int): String`
-gives both. A parameter that appears in no argument cannot be inferred and is
-an error at the call, naming which one.
+gives both.
 
-Explicit type arguments parse today and are rejected. They will be needed
-once a type parameter can appear only in the result.
+What is expected of the call fills in the rest, which is the only way a
+parameter appearing just in the result can be known:
+
+```noto
+fn emptyStack<T>(): Stack<T> { .. }
+val numbers: Stack<Int> = emptyStack()
+```
+
+A parameter that neither an argument nor the expected type mentions is an
+error at the call, naming which one. Explicit type arguments parse and are
+rejected; they would be the third way to say it and nothing needs them yet.
 
 ## What would force this decision to be revisited
 
@@ -70,7 +97,7 @@ struct passed by value, a fat pointer.
 
 ## Not implemented
 
-- Generic classes and enums: `class Box<T>(val value: T)`.
+- Generic enums: `enum Maybe<T> { Nothing, Just(value: T) }`.
 - Bounds of any kind.
 - Explicit type arguments.
 - A type parameter that appears only in the result type.

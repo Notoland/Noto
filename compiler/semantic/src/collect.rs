@@ -42,7 +42,7 @@ impl Checker<'_> {
                 codes::UNSUPPORTED_CONSTRUCT,
                 format!("{what} are not supported by this compiler yet"),
             )
-            .with_primary(span, "not implemented in Noto 0.13")
+            .with_primary(span, "not implemented in Noto 0.14")
         };
 
         if let Some(param) = decl.type_params.first() {
@@ -167,7 +167,7 @@ impl Checker<'_> {
                 codes::UNSUPPORTED_CONSTRUCT,
                 format!("{what} are not supported by this compiler yet"),
             )
-            .with_primary(span, "not implemented in Noto 0.13")
+            .with_primary(span, "not implemented in Noto 0.14")
         };
 
         if decl.class_kind != ClassKind::Class {
@@ -176,15 +176,19 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     format!("`{}` declarations are not supported by this compiler yet", decl.class_kind.as_str()),
                 )
-                .with_primary(item.span, "not implemented in Noto 0.13")
+                .with_primary(item.span, "not implemented in Noto 0.14")
                 .with_note("a value type is copied on assignment, which needs the memory model")
                 .with_help("declare it as a `class` for now: an object is a reference"),
             );
             return;
         }
-        if let Some(param) = decl.type_params.first() {
-            self.sink.emit(unsupported("generic types", param.span));
-            return;
+        for parameter in &decl.type_params {
+            if let Some(bound) = parameter.bounds.first() {
+                self.sink.emit(
+                    unsupported("bounds on a type parameter", bound.span)
+                        .with_note("a type parameter permits only moving the value around"),
+                );
+            }
         }
         if let Some(base) = decl.base.as_ref().or(decl.interfaces.first()) {
             self.sink.emit(unsupported("base classes and interfaces", base.span));
@@ -208,9 +212,26 @@ impl Checker<'_> {
         let id = ClassId(self.classes.len() as u32);
         let qualified = self.qualify(&name);
         let def = self.store.declare(qualified, noto_types::DefKind::Class);
-        let ty = self.store.intern(Type::Named { def, arguments: Vec::new() });
+
+        // The class's own type parameters name themselves: inside `Box<T>`,
+        // `this` is a `Box<T>`.
+        let type_params: Vec<String> =
+            decl.type_params.iter().map(|parameter| parameter.name.name.clone()).collect();
+        let arguments: Vec<noto_types::TypeId> = type_params
+            .iter()
+            .enumerate()
+            .map(|(index, name)| {
+                self.store.intern(Type::Parameter {
+                    def,
+                    index: index as u32,
+                    name: name.clone(),
+                })
+            })
+            .collect();
+        let ty = self.store.intern(Type::Named { def, arguments });
         self.classes.push(ClassInfo {
             name: name.clone(),
+            type_params,
             module: self.current_module,
             is_exported: item.modifiers.is_exported,
             fields: Vec::new(),
@@ -238,6 +259,12 @@ impl Checker<'_> {
             // `declare_class` reported why this declaration is not a class.
             return;
         };
+        let (def, type_params) =
+            (self.classes[id.0 as usize].def, self.classes[id.0 as usize].type_params.clone());
+        self.enter_type_params(
+            (!type_params.is_empty()).then_some(def),
+            &type_params,
+        );
 
         let mut fields: Vec<FieldInfo> = Vec::new();
         for param in &decl.primary_params {
@@ -247,7 +274,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "default values for constructor parameters are not supported by this compiler yet",
                     )
-                    .with_primary(default.span, "not implemented in Noto 0.13"),
+                    .with_primary(default.span, "not implemented in Noto 0.14"),
                 );
             }
 
@@ -358,6 +385,8 @@ impl Checker<'_> {
             let ItemKind::Fn(function) = &item.kind else { continue };
             self.collect_method(id, item, function);
         }
+
+        self.leave_type_params((!type_params.is_empty()).then_some(def));
     }
 
     /// Collects a class's properties, which come in two kinds.
@@ -662,7 +691,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "generic methods are not supported by this compiler yet",
                 )
-                .with_primary(function.type_params[0].span, "not implemented in Noto 0.13"),
+                .with_primary(function.type_params[0].span, "not implemented in Noto 0.14"),
             );
             return;
         }
@@ -765,7 +794,7 @@ impl Checker<'_> {
                             codes::UNSUPPORTED_CONSTRUCT,
                             "default values for case data are not supported by this compiler yet",
                         )
-                        .with_primary(default.span, "not implemented in Noto 0.13"),
+                        .with_primary(default.span, "not implemented in Noto 0.14"),
                     );
                 }
                 let ty = match &field.ty {
@@ -816,7 +845,7 @@ impl Checker<'_> {
                 codes::UNSUPPORTED_CONSTRUCT,
                 format!("`{name}` declarations are not supported by this compiler yet"),
             )
-            .with_primary(item.span, "not implemented in Noto 0.13")
+            .with_primary(item.span, "not implemented in Noto 0.14")
             .with_note(
                 "the syntax is accepted so that tooling can read the whole language; \
                  code generation for it lands in a later release",
@@ -831,7 +860,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "extension functions are not supported by this compiler yet",
                 )
-                .with_primary(receiver.span, "not implemented in Noto 0.13"),
+                .with_primary(receiver.span, "not implemented in Noto 0.14"),
             );
             return;
         }
@@ -842,7 +871,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "bounds on a type parameter are not supported by this compiler yet",
                     )
-                    .with_primary(bound.span, "not implemented in Noto 0.13")
+                    .with_primary(bound.span, "not implemented in Noto 0.14")
                     .with_note("a type parameter permits only moving the value around"),
                 );
             }
@@ -956,7 +985,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "`main` cannot be `async` in this compiler yet",
                 )
-                .with_primary(span, "not implemented in Noto 0.13"),
+                .with_primary(span, "not implemented in Noto 0.14"),
             );
         }
     }
@@ -1184,18 +1213,13 @@ impl Checker<'_> {
     pub(crate) fn resolve_type(&mut self, ty: &TypeExpr) -> TypeId {
         match &ty.kind {
             TypeExprKind::Named { path, arguments } => {
-                if !arguments.is_empty() {
-                    self.sink.emit(
-                        Diagnostic::error(
-                            codes::UNSUPPORTED_CONSTRUCT,
-                            "generic types are not supported by this compiler yet",
-                        )
-                        .with_primary(ty.span, "not implemented in Noto 0.13")
-                        .with_note("generic functions are; generic classes are not"),
-                    );
-                    return self.store.error();
+                let written = path.to_dotted();
+                if arguments.is_empty() {
+                    return self.resolve_type_name(&written, ty.span);
                 }
-                self.resolve_type_name(&path.to_dotted(), ty.span)
+                let arguments: Vec<TypeId> =
+                    arguments.iter().map(|argument| self.resolve_type(argument)).collect();
+                self.resolve_generic_type(&written, arguments, ty.span)
             }
             TypeExprKind::Nullable(inner) => {
                 let inner = self.resolve_type(inner);
@@ -1285,6 +1309,46 @@ impl Checker<'_> {
             scope.insert(name.clone(), ty);
         }
         self.type_scope.push(scope);
+    }
+
+    /// Resolves `Box<Int>`: a declared type applied to arguments.
+    fn resolve_generic_type(
+        &mut self,
+        name: &str,
+        arguments: Vec<TypeId>,
+        span: Span,
+    ) -> TypeId {
+        let Some(id) = self.lookup_type(name) else {
+            let mut diagnostic =
+                Diagnostic::error(codes::UNKNOWN_TYPE, format!("cannot find type `{name}`"))
+                    .with_primary(span, "not a type in scope");
+            if self.lookup_enum(name).is_some() {
+                diagnostic = diagnostic.with_note("an enum takes no type arguments yet");
+            }
+            self.sink.emit(diagnostic);
+            return self.store.error();
+        };
+
+        let class = &self.classes[id.0 as usize];
+        let (class_name, declared, def) =
+            (class.name.clone(), class.type_params.len(), class.def);
+        if declared != arguments.len() {
+            self.sink.emit(
+                Diagnostic::error(
+                    codes::ARITY_MISMATCH,
+                    format!(
+                        "`{class_name}` takes {declared} type argument{}, but {} {} given",
+                        if declared == 1 { "" } else { "s" },
+                        arguments.len(),
+                        if arguments.len() == 1 { "was" } else { "were" },
+                    ),
+                )
+                .with_primary(span, "the counts do not line up"),
+            );
+            return self.store.error();
+        }
+
+        self.store.intern(Type::Named { def, arguments })
     }
 
     /// Looks a type name up among the built-in types and declared classes.

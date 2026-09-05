@@ -366,6 +366,24 @@ impl<'sink> Checker<'sink> {
             .map(|index| (EnumId(index as u32), &self.enums[index]))
     }
 
+    /// What each of a class's type parameters is, for a receiver of that
+    /// class.
+    ///
+    /// Reading a field of a `Box<Int>` gives an `Int` because the field is
+    /// declared `T` and this is what says `T` is `Int` here.
+    fn class_bindings(
+        &self,
+        receiver: TypeId,
+    ) -> HashMap<(noto_types::DefId, u32), TypeId> {
+        let mut bindings = HashMap::new();
+        if let noto_types::Type::Named { def, arguments } = self.store.get(receiver) {
+            for (index, argument) in arguments.iter().enumerate() {
+                bindings.insert((*def, index as u32), *argument);
+            }
+        }
+        bindings
+    }
+
     /// What a local has been narrowed to, if a check proved something about
     /// it.
     fn narrowed_type(&self, local: LocalId) -> Option<TypeId> {

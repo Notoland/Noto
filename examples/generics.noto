@@ -1,0 +1,88 @@
+// Generics in Noto 0.14, and what they are compiled to.
+//
+//     noto test examples/generics.noto
+//     noto run examples/generics.noto
+//
+// A generic function and a generic class are compiled once, not once per set
+// of type arguments, because every value in Noto is one machine word. The
+// reasoning is in docs/design/generics.md.
+
+import list { mapped, kept, folded }
+
+/// A value and nothing else, so that `null` can mean "no value" without the
+/// value itself having to be nullable.
+export class Box<T>(val value: T)
+
+export class Pair<A, B>(val first: A, val second: B) {
+    export fn swapped(): Pair<B, A> = Pair(second, first)
+}
+
+/// A last-in, first-out stack.
+export class Stack<T>(val items: [T]) {
+    export fn push(item: T) {
+        items.push(item)
+    }
+
+    export fn size(): Int = items.length
+
+    export fn top(): T? {
+        if items.length == 0 { return null }
+        return items[items.length - 1]
+    }
+}
+
+export fn emptyStack<T>(): Stack<T> {
+    val items: [T] = []
+    return Stack(items)
+}
+
+test "a box holds whatever it was given" {
+    assert(Box(42).value == 42)
+    assert(Box("texto").value == "texto")
+}
+
+test "a pair keeps both, and swapping keeps the types straight" {
+    val p = Pair(1, "um")
+    assert(p.first == 1)
+    assert(p.second == "um")
+
+    val back = p.swapped()
+    assert(back.first == "um")
+    assert(back.second == 1)
+}
+
+test "a stack of anything" {
+    val numbers: Stack<Int> = emptyStack()
+    assert(numbers.top() == null)
+    numbers.push(1)
+    numbers.push(2)
+    assert(numbers.size() == 2)
+    assert((numbers.top() ?: 0) == 2)
+
+    val words: Stack<String> = emptyStack()
+    words.push("a")
+    assert((words.top() ?: "") == "a")
+}
+
+test "generic classes and generic functions compose" {
+    val boxes = mapped([1, 2, 3], { n: Int -> Box(n) })
+    assert(boxes.length == 3)
+    assert(boxes[2].value == 3)
+
+    val big = kept(boxes, { b: Box<Int> -> b.value > 1 })
+    assert(big.length == 2)
+
+    val total = folded(boxes, 0, { sum: Int, b: Box<Int> -> sum + b.value })
+    assert(total == 6)
+}
+
+fn main() {
+    val p = Pair("chave", 42)
+    println("${p.first} -> ${p.second}")
+    println("${p.swapped().first} <- ${p.swapped().second}")
+
+    val stack: Stack<String> = emptyStack()
+    stack.push("um")
+    stack.push("dois")
+    println("${stack.size()} itens, topo ${stack.top() ?: "nenhum"}")
+}

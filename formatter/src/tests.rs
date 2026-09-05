@@ -33,6 +33,8 @@ fn corpus() -> Vec<&'static str> {
         "const LIMIT: Int = 10\n\nfn main() {\n    println(LIMIT)\n}\n",
         "fn main() {\n    val total = 1 +\n        2\n    println(total)\n}\n",
         "fn first<T>(xs: [T]): T = xs[0]\n",
+        "class Box<T>(val value: T)\n",
+        "fn unwrap(b: Box<Int>): Int = b.value\n",
         "fn apply(f: fn(Int): Int): Int = f(1)\n",
         "test \"it works\" {\n    assert(true)\n}\n",
     ]
@@ -165,9 +167,30 @@ fn a_type_parameter_list_is_written_tight() {
 }
 
 #[test]
+fn a_generic_class_and_a_type_argument_are_written_tight() {
+    assert_eq!(
+        fmt("class Box < T > (val value: T)\n"),
+        "class Box<T>(val value: T)\n"
+    );
+    assert_eq!(
+        fmt("fn unwrap(b: Box < Int >): Int = b.value\n"),
+        "fn unwrap(b: Box<Int>): Int = b.value\n"
+    );
+    assert_eq!(
+        fmt("fn f(): Pair < Box < Int >, String > = g()\n"),
+        "fn f(): Pair<Box<Int>, String> = g()\n"
+    );
+}
+
+#[test]
 fn a_comparison_keeps_its_spaces() {
     // The same `<` outside a type parameter list is an operator.
     assert_eq!(fmt("fn f(a: Int): Bool = a<2\n"), "fn f(a: Int): Bool = a < 2\n");
+    // A comma is not a type position, so this is two comparisons.
+    assert_eq!(
+        fmt("fn f(a: Int, b: Int, c: Int): Bool = g(a, b<c)\n"),
+        "fn f(a: Int, b: Int, c: Int): Bool = g(a, b < c)\n"
+    );
 }
 
 #[test]

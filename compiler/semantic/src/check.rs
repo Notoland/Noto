@@ -26,6 +26,18 @@ impl Checker<'_> {
                     self.check_test_body(id, &test.body);
                 }
                 ItemKind::TypeDecl(decl) => {
+                    let class = self.own_type(&decl.name.name);
+                    let params = class
+                        .map(|id| {
+                            (
+                                self.classes[id.0 as usize].def,
+                                self.classes[id.0 as usize].type_params.clone(),
+                            )
+                        })
+                        .filter(|(_, names)| !names.is_empty());
+                    if let Some((def, names)) = &params {
+                        self.enter_type_params(Some(*def), names);
+                    }
                     for method in &decl.methods {
                         let ItemKind::Fn(function) = &method.kind else { continue };
                         let Some(body) = &function.body else { continue };
@@ -34,6 +46,9 @@ impl Checker<'_> {
                     }
                     self.check_accessor_bodies(decl);
                     self.check_field_initializers(decl);
+                    if params.is_some() {
+                        self.type_scope.pop();
+                    }
                 }
                 _ => {}
             }
@@ -311,7 +326,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "declarations inside a function body are not supported yet",
                     )
-                    .with_primary(stmt.span, "not implemented in Noto 0.13")
+                    .with_primary(stmt.span, "not implemented in Noto 0.14")
                     .with_help("move the declaration to the top level of the file"),
                 );
                 self.store.unit()
@@ -395,7 +410,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this pattern is not supported in a binding yet",
                     )
-                    .with_primary(pattern.span, "not implemented in Noto 0.13")
+                    .with_primary(pattern.span, "not implemented in Noto 0.14")
                     .with_help("bind a name, a tuple of names, or `_`"),
                 );
             }
@@ -422,7 +437,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         format!("cannot iterate over a `{rendered}` yet"),
                     )
-                    .with_primary(iterable.span, "not iterable in Noto 0.13")
+                    .with_primary(iterable.span, "not iterable in Noto 0.14")
                     .with_help("iterate over a range, as in `for i in 0..10`"),
                 );
                 self.store.error()
@@ -469,7 +484,7 @@ impl Checker<'_> {
                 self.check_when(scrutinee.as_deref(), arms, expr.span)
             }
             ExprKind::Block(block) => self.check_block(block),
-            ExprKind::Call(call) => self.check_call(expr, call),
+            ExprKind::Call(call) => self.check_call(expr, call, expected),
             ExprKind::Member { receiver, name, safe } => {
                 self.check_member(expr, receiver, name, *safe)
             }
@@ -493,7 +508,7 @@ impl Checker<'_> {
                     let ty = self.check_expr_expecting(bound, int);
                     self.expect_assignable(ty, int, bound.span, None);
                 }
-                // Ranges exist only inside `for` and `when` in Noto 0.13; there
+                // Ranges exist only inside `for` and `when` in Noto 0.14; there
                 // is no first-class `Range` type to give them yet.
                 self.store.unit()
             }
@@ -514,7 +529,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this expression is not supported by this compiler yet",
                     )
-                    .with_primary(expr.span, "not implemented in Noto 0.13"),
+                    .with_primary(expr.span, "not implemented in Noto 0.14"),
                 );
                 self.store.error()
             }
@@ -618,7 +633,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "an async lambda is not supported by this compiler yet",
                 )
-                .with_primary(expr.span, "not implemented in Noto 0.13"),
+                .with_primary(expr.span, "not implemented in Noto 0.14"),
             );
             return self.store.error();
         }
@@ -1256,7 +1271,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "`in` is not supported outside a `when` arm yet",
                     )
-                    .with_primary(span, "not implemented in Noto 0.13"),
+                    .with_primary(span, "not implemented in Noto 0.14"),
                 );
                 bool_ty
             }
@@ -1759,7 +1774,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this pattern is not supported by this compiler yet",
                     )
-                    .with_primary(pattern.span, "not implemented in Noto 0.13"),
+                    .with_primary(pattern.span, "not implemented in Noto 0.14"),
                 );
             }
         }
@@ -1912,14 +1927,19 @@ impl Checker<'_> {
         self.store.nothing()
     }
 
-    fn check_call(&mut self, expr: &Expr, call: &noto_ast::CallExpr) -> TypeId {
+    fn check_call(
+        &mut self,
+        expr: &Expr,
+        call: &noto_ast::CallExpr,
+        expected: Option<TypeId>,
+    ) -> TypeId {
         if !call.type_arguments.is_empty() {
             self.sink.emit(
                 Diagnostic::error(
                     codes::UNSUPPORTED_CONSTRUCT,
                     "explicit type arguments are not supported by this compiler yet",
                 )
-                .with_primary(expr.span, "not implemented in Noto 0.13"),
+                .with_primary(expr.span, "not implemented in Noto 0.14"),
             );
         }
 
@@ -1930,7 +1950,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "named arguments are not supported by this compiler yet",
                     )
-                    .with_primary(name.span, "not implemented in Noto 0.13")
+                    .with_primary(name.span, "not implemented in Noto 0.14")
                     .with_help("pass the arguments positionally"),
                 );
             }
@@ -2010,7 +2030,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "safe calls are not supported by this compiler yet",
                     )
-                    .with_primary(expr.span, "not implemented in Noto 0.13"),
+                    .with_primary(expr.span, "not implemented in Noto 0.14"),
                 );
                 return self.store.error();
             }
@@ -2028,7 +2048,10 @@ impl Checker<'_> {
                 return self.store.error();
             }
             if let Some((_, class)) = self.class_of(base) {
-                let Some(method) = class.method(&name.name) else {
+                let bindings = self.class_bindings(base);
+                let Some(method) = self.class_of(base).and_then(|(_, c)| c.method(&name.name))
+                else {
+                    let class = self.class_of(base).expect("just matched").1;
                     let (class_name, note) = (class.name.clone(), Self::member_list(class));
                     self.sink.emit(
                         Diagnostic::error(
@@ -2041,8 +2064,9 @@ impl Checker<'_> {
                     return self.store.error();
                 };
                 let function = method.function;
+                let _ = class;
                 self.record_resolution(call.callee.id, Resolution::Method(function));
-                return self.check_method_arguments(expr, call, function);
+                return self.check_method_arguments_with(expr, call, function, &bindings);
             }
 
             match builtins::member(&self.store, base, &name.name) {
@@ -2086,7 +2110,7 @@ impl Checker<'_> {
         if let ExprKind::Path(path) = &call.callee.kind {
             if let Some(Resolution::Function(id)) = self.lookup_value(&path.to_dotted()) {
                 self.record_resolution(call.callee.id, Resolution::Function(id));
-                return self.check_function_arguments(expr, call, id);
+                return self.check_function_arguments(expr, call, id, expected);
             }
         }
 
@@ -2131,6 +2155,7 @@ impl Checker<'_> {
         expr: &Expr,
         call: &noto_ast::CallExpr,
         function: FunctionId,
+        wanted: Option<TypeId>,
     ) -> TypeId {
         let info = &self.functions[function.0 as usize];
         let (name, result) = (info.name.clone(), info.result);
@@ -2154,8 +2179,15 @@ impl Checker<'_> {
         }
 
         // A generic call reads its type arguments out of what it was passed:
-        // matching `[T]` against `[Int]` says what `T` is.
+        // matching `[T]` against `[Int]` says what `T` is. What is expected of
+        // the call says the rest, which is the only way a parameter appearing
+        // just in the result can be known — `val s: Stack<Int> = empty()`.
         let mut bound = std::collections::HashMap::new();
+        if let Some(wanted) = wanted {
+            if !self.store.is_generic(wanted) {
+                self.store.unify(result, wanted, &mut bound);
+            }
+        }
         for (argument, declared) in call.arguments.iter().zip(&expected) {
             // What is expected of the argument is the declared type with
             // whatever is known so far filled in, so a lambda passed second
@@ -2431,7 +2463,7 @@ impl Checker<'_> {
             }
             Some(Resolution::Function(id)) => {
                 self.record_resolution(call.callee.id, Resolution::Function(id));
-                self.check_function_arguments(expr, call, id)
+                self.check_function_arguments(expr, call, id, None)
             }
             _ => {
                 for argument in &call.arguments {
@@ -2478,14 +2510,28 @@ impl Checker<'_> {
         call: &noto_ast::CallExpr,
         function: FunctionId,
     ) -> TypeId {
+        self.check_method_arguments_with(expr, call, function, &HashMap::new())
+    }
+
+    /// Checks a method call, with the receiver's type arguments filled in.
+    fn check_method_arguments_with(
+        &mut self,
+        expr: &Expr,
+        call: &noto_ast::CallExpr,
+        function: FunctionId,
+        bindings: &HashMap<(noto_types::DefId, u32), TypeId>,
+    ) -> TypeId {
         let info = &self.functions[function.0 as usize];
-        let (name, result) = (info.name.clone(), info.result);
-        let expected: Vec<TypeId> = info
+        let (name, declared_result) = (info.name.clone(), info.result);
+        let declared: Vec<TypeId> = info
             .parameters
             .iter()
             .skip(1)
             .map(|local| self.locals[local.0 as usize].ty)
             .collect();
+        let result = self.store.substitute(declared_result, bindings);
+        let expected: Vec<TypeId> =
+            declared.iter().map(|ty| self.store.substitute(*ty, bindings)).collect();
 
         self.check_argument_count(expr.span, call.arguments.len(), expected.len(), &name);
 
@@ -2550,6 +2596,7 @@ impl Checker<'_> {
 
         let class = &self.classes[id.0 as usize];
         let (name, ty) = (class.name.clone(), class.ty);
+        let (def, type_params) = (class.def, class.type_params.clone());
         // Only the primary constructor's parameters are passed. A field
         // declared in the class body carries its own initialiser, so there is
         // no argument for it.
@@ -2562,10 +2609,24 @@ impl Checker<'_> {
 
         self.check_argument_count(expr.span, call.arguments.len(), fields.len(), &name);
 
-        for (argument, (field, expected, declared_at)) in call.arguments.iter().zip(&fields) {
-            let found = self.check_expr_expecting(&argument.value, *expected);
-            if !self.store.is_assignable(found, *expected) {
-                let (found, expected) = (self.store.render(found), self.store.render(*expected));
+        let mut bound = HashMap::new();
+        for (argument, (field, declared, declared_at)) in call.arguments.iter().zip(&fields) {
+            let hint = self.store.substitute(*declared, &bound);
+            let usable = !self.store.is_generic(hint)
+                || matches!(self.store.get(hint), Type::Function { .. });
+            let found = if usable {
+                self.check_expr_expecting(&argument.value, hint)
+            } else {
+                self.check_expr(&argument.value)
+            };
+
+            let fits = if type_params.is_empty() {
+                self.store.is_assignable(found, *declared)
+            } else {
+                self.store.unify(*declared, found, &mut bound)
+            };
+            if !fits {
+                let (found, expected) = (self.store.render(found), self.store.render(hint));
                 self.sink.emit(
                     Diagnostic::error(
                         codes::TYPE_MISMATCH,
@@ -2579,6 +2640,30 @@ impl Checker<'_> {
         for argument in call.arguments.iter().skip(fields.len()) {
             self.check_expr(&argument.value);
         }
+
+        // What the construction produces is the class applied to whatever its
+        // arguments just said its parameters are.
+        let ty = if type_params.is_empty() {
+            ty
+        } else {
+            let missing: Vec<&String> = type_params
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| !bound.contains_key(&(def, *index as u32)))
+                .map(|(_, name)| name)
+                .collect();
+            if let Some(first) = missing.first() {
+                self.sink.emit(
+                    Diagnostic::error(
+                        codes::CANNOT_INFER,
+                        format!("nothing here says what `{first}` is in `{name}`"),
+                    )
+                    .with_primary(expr.span, "it appears in no argument"),
+                );
+                return self.store.error();
+            }
+            self.store.substitute(ty, &bound)
+        };
 
         self.record_type(call.callee.id, ty);
         ty
@@ -2719,7 +2804,9 @@ impl Checker<'_> {
             let Some((index, field)) = class.field(&name.name) else {
                 let class_name = class.name.clone();
                 if let Some((index, property)) = class.property(&name.name) {
-                    let ty = property.ty;
+                    let declared = property.ty;
+                    let bindings = self.class_bindings(base);
+                    let ty = self.store.substitute(declared, &bindings);
                     self.record_resolution(expr.id, Resolution::Property { class: id, index });
                     return if safe { self.store.nullable(ty) } else { ty };
                 }
@@ -2743,7 +2830,9 @@ impl Checker<'_> {
                 self.sink.emit(diagnostic);
                 return self.store.error();
             };
-            let ty = field.ty;
+            let declared = field.ty;
+            let bindings = self.class_bindings(base);
+            let ty = self.store.substitute(declared, &bindings);
             self.record_resolution(expr.id, Resolution::Field { class: id, index });
             // Reading through `?.` may find nothing, so what comes out may be
             // nothing either.

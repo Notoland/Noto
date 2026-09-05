@@ -1,0 +1,132 @@
+// Working with lists.
+//
+// Everything here is generic and written in Noto. A generic function is
+// compiled once, not once per type argument, because every value in Noto is
+// one machine word — see docs/design/generics.md.
+
+/// A list of what `f` produced for each element.
+export fn mapped<T, U>(xs: [T], f: fn(T): U): [U] {
+    val out: [U] = []
+    for x in xs { out.push(f(x)) }
+    return out
+}
+
+/// The elements `keep` accepted, in order.
+export fn kept<T>(xs: [T], keep: fn(T): Bool): [T] {
+    val out: [T] = []
+    for x in xs {
+        if keep(x) { out.push(x) }
+    }
+    return out
+}
+
+/// `start`, combined with each element in turn.
+export fn folded<T, A>(xs: [T], start: A, combine: fn(A, T): A): A {
+    var total = start
+    for x in xs { total = combine(total, x) }
+    return total
+}
+
+/// Whether any element satisfies `matches`.
+export fn any<T>(xs: [T], matches: fn(T): Bool): Bool {
+    for x in xs {
+        if matches(x) { return true }
+    }
+    return false
+}
+
+/// Whether every element satisfies `matches`.
+export fn all<T>(xs: [T], matches: fn(T): Bool): Bool {
+    for x in xs {
+        if !matches(x) { return false }
+    }
+    return true
+}
+
+/// How many elements satisfy `matches`.
+export fn count<T>(xs: [T], matches: fn(T): Bool): Int {
+    var found = 0
+    for x in xs {
+        if matches(x) { found += 1 }
+    }
+    return found
+}
+
+/// The first element satisfying `matches`, or null.
+export fn firstWhere<T>(xs: [T], matches: fn(T): Bool): T? {
+    for x in xs {
+        if matches(x) { return x }
+    }
+    return null
+}
+
+/// The elements of `xs` and then of `ys`.
+export fn joined<T>(xs: [T], ys: [T]): [T] {
+    val out: [T] = []
+    for x in xs { out.push(x) }
+    for y in ys { out.push(y) }
+    return out
+}
+
+/// The elements in the opposite order.
+export fn reversed<T>(xs: [T]): [T] {
+    val out: [T] = []
+    var index = xs.length - 1
+    while index >= 0 {
+        out.push(xs[index])
+        index -= 1
+    }
+    return out
+}
+
+test "mapped produces one element per element" {
+    val doubled = mapped([1, 2, 3], { it * 2 })
+    assert(doubled.length == 3)
+    assert(doubled[2] == 6)
+
+    val words = mapped([1, 2], { n: Int -> "n=$n" })
+    assert(words[1] == "n=2")
+}
+
+test "kept keeps what its test accepts" {
+    assert(kept([1, 2, 3, 4], { it % 2 == 0 }).length == 2)
+    assert(kept([1, 2], { it > 10 }).length == 0)
+}
+
+test "folded combines from the start" {
+    assert(folded([1, 2, 3], 0, { total: Int, x: Int -> total + x }) == 6)
+    assert(folded(["a", "b"], "", { out: String, x: String -> out + x }) == "ab")
+}
+
+test "any and all ask opposite questions" {
+    assert(any([1, 2, 3], { it > 2 }))
+    assert(!any([1, 2], { it > 5 }))
+    assert(all([2, 4], { it % 2 == 0 }))
+    assert(!all([2, 3], { it % 2 == 0 }))
+    // An empty list satisfies everything and nothing.
+    val empty: [Int] = []
+    assert(!any(empty, { it > 0 }))
+    assert(all(empty, { it > 0 }))
+}
+
+test "count and firstWhere look for the same thing" {
+    assert(count([1, 2, 3, 4], { it % 2 == 0 }) == 2)
+    assert((firstWhere([1, 2, 3], { it > 1 }) ?: 0) == 2)
+    assert(firstWhere([1, 2], { it > 10 }) == null)
+}
+
+test "joined and reversed rearrange without losing anything" {
+    val both = joined([1, 2], [3])
+    assert(both.length == 3)
+    assert(both[2] == 3)
+
+    val back = reversed([1, 2, 3])
+    assert(back[0] == 3)
+    assert(back[2] == 1)
+    assert(reversed(reversed([1, 2, 3]))[0] == 1)
+}
+
+test "one compiled function serves every type" {
+    assert(reversed(["a", "b"])[0] == "b")
+    assert(mapped(["a", "bb"], { s: String -> s.length })[1] == 2)
+}

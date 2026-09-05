@@ -1115,10 +1115,58 @@ fn a_type_parameter_declared_twice_is_reported() {
 }
 
 #[test]
-fn generic_classes_are_still_refused() {
+fn a_generic_class_takes_its_arguments_from_its_constructor() {
+    check_ok(
+        "class Box<T>(val value: T)\n         fn main() {\n    println(Box(42).value)\n    println(Box(\"a\").value)\n}\n",
+    );
     check_error(
-        "class Box<T>(val value: T)\nfn main() {}\n",
-        "generic types are not supported",
+        "class Box<T>(val value: T)\n         fn main() {\n    val s: String = Box(42).value\n}\n",
+        "expected `String`",
+    );
+}
+
+#[test]
+fn a_generic_class_may_be_written_with_its_arguments() {
+    check_ok(
+        "class Box<T>(val value: T)\n         fn unwrap(b: Box<Int>): Int = b.value\n         fn main() {\n    println(unwrap(Box(1)))\n}\n",
+    );
+    check_error(
+        "class Box<T>(val value: T)\n         fn unwrap(b: Box<Int>): Int = b.value\n         fn main() {\n    println(unwrap(Box(\"a\")))\n}\n",
+        "expected `Box<Int>`, found `Box<String>`",
+    );
+}
+
+#[test]
+fn a_wrong_number_of_type_arguments_is_reported() {
+    check_error(
+        "class Pair<A, B>(val first: A, val second: B)\n         fn f(p: Pair<Int>): Int = p.first\nfn main() {}\n",
+        "takes 2 type arguments",
+    );
+}
+
+#[test]
+fn a_method_of_a_generic_class_sees_its_parameters() {
+    check_ok(
+        "class Pair<A, B>(val first: A, val second: B) {\n             fn swapped(): Pair<B, A> = Pair(second, first)\n}\n         fn main() {\n    println(Pair(1, \"a\").swapped().first)\n}\n",
+    );
+    check_error(
+        "class Pair<A, B>(val first: A, val second: B) {\n             fn swapped(): Pair<A, B> = Pair(second, first)\n}\n         fn main() {}\n",
+        "must produce a `Pair<A, B>`",
+    );
+}
+
+#[test]
+fn a_generic_class_may_hold_a_list_of_its_parameter() {
+    check_ok(
+        "class Stack<T>(val items: [T]) {\n             fn push(item: T) {\n        items.push(item)\n    }\n             fn top(): T? {\n        if items.length == 0 { return null }\n                 return items[items.length - 1]\n    }\n}\n         fn main() {\n    val xs: [Int] = []\n    val s = Stack(xs)\n             s.push(1)\n    println(s.top() ?: 0)\n}\n",
+    );
+}
+
+#[test]
+fn a_generic_enum_is_still_refused() {
+    check_error(
+        "enum Maybe<T> { Nothing, Just(value: T) }\nfn main() {}\n",
+        "generic enums are not supported",
     );
 }
 

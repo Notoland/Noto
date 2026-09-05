@@ -8,7 +8,7 @@
 //!
 //! # The allocator
 //!
-//! Noto 0.13 allocates from a bump pointer over regions obtained with `mmap`
+//! Noto 0.14 allocates from a bump pointer over regions obtained with `mmap`
 //! and never frees. That is enough to run programs that build strings, and it
 //! is deliberately the simplest thing that is correct while the memory model
 //! is being designed; see `docs/rfcs/0002-memory-model.md`.

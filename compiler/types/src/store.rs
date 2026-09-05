@@ -337,6 +337,20 @@ impl TypeStore {
         }
 
         match (self.get(pattern), self.get(actual)) {
+            // `Box<T>` against `Box<Int>` says what `T` is; two different
+            // declarations never match, whatever their arguments.
+            (
+                Type::Named { def: left_def, arguments: left },
+                Type::Named { def: right_def, arguments: right },
+            ) => {
+                left_def == right_def
+                    && left.len() == right.len()
+                    && left
+                        .clone()
+                        .iter()
+                        .zip(right.clone())
+                        .all(|(a, b)| self.unify(*a, b, bound))
+            }
             (Type::List(left), Type::List(right)) => self.unify(*left, *right, bound),
             (Type::Nullable(left), Type::Nullable(right)) => self.unify(*left, *right, bound),
             // A plain value where a nullable is wanted is still a match, and
@@ -368,6 +382,11 @@ impl TypeStore {
             Type::Parameter { def, index, .. } => {
                 bound.get(&(def, index)).copied().unwrap_or(ty)
             }
+            Type::Named { def, arguments } if !arguments.is_empty() => {
+                let arguments =
+                    arguments.iter().map(|argument| self.substitute(*argument, bound)).collect();
+                self.intern(Type::Named { def, arguments })
+            }
             Type::List(element) => {
                 let element = self.substitute(element, bound);
                 self.intern(Type::List(element))
@@ -394,6 +413,9 @@ impl TypeStore {
     pub fn is_generic(&self, ty: TypeId) -> bool {
         match self.get(ty) {
             Type::Parameter { .. } => true,
+            Type::Named { arguments, .. } => {
+                arguments.iter().any(|argument| self.is_generic(*argument))
+            }
             Type::List(inner) | Type::Nullable(inner) => self.is_generic(*inner),
             Type::Tuple(items) => items.iter().any(|item| self.is_generic(*item)),
             Type::Function { parameters, result, .. } => {

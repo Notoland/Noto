@@ -8,19 +8,33 @@
 
 use noto_lexer::{Keyword, Token, TokenKind};
 
-/// Marks the tokens that belong to a `fn name<T, U>` parameter list.
+/// Marks the tokens that belong to a `<T, U>` list of type parameters or
+/// arguments.
 ///
 /// `<` is a comparison everywhere else, and a formatter that works on tokens
-/// cannot tell the two apart from the pair alone. This is the one place the
-/// grammar leaves no choice: after `fn` and a name, a `<` opens type
-/// parameters. Everything from it to the matching `>` is marked, and the
-/// spacing rules below tighten what is marked.
+/// cannot tell the two apart from the pair alone. These are the places the
+/// grammar leaves no choice: after `fn`, `class`, `enum` or `interface` and a
+/// name, and after a name that is itself in a type position — one following
+/// `:` or `[`, or one already inside a marked list. Everything from the `<`
+/// to the matching `>` is marked, and the spacing rules below tighten it.
+///
+/// Nothing else opens one. `f(a, b < c)` keeps its spaces, because a comma is
+/// not a type position.
 pub(crate) fn type_parameter_spans(tokens: &[Token]) -> Vec<bool> {
     let mut marked = vec![false; tokens.len()];
     let mut index = 0;
 
     while index + 2 < tokens.len() {
-        let opens = matches!(tokens[index].kind, TokenKind::Keyword(Keyword::Fn))
+        let introduces = matches!(
+            tokens[index].kind,
+            TokenKind::Keyword(Keyword::Fn)
+                | TokenKind::Keyword(Keyword::Class)
+                | TokenKind::Keyword(Keyword::Enum)
+                | TokenKind::Keyword(Keyword::Interface)
+                | TokenKind::Colon
+                | TokenKind::LBracket
+        );
+        let opens = introduces
             && matches!(tokens[index + 1].kind, TokenKind::Ident(_))
             && tokens[index + 2].kind == TokenKind::Lt;
         if !opens {
@@ -37,7 +51,12 @@ pub(crate) fn type_parameter_spans(tokens: &[Token]) -> Vec<bool> {
                 // A type parameter list holds names, commas and nothing that
                 // could close it another way; anything else means this was a
                 // comparison after all.
-                TokenKind::Ident(_) | TokenKind::Comma | TokenKind::Colon => {}
+                TokenKind::Ident(_)
+                | TokenKind::Comma
+                | TokenKind::Colon
+                | TokenKind::Question
+                | TokenKind::LBracket
+                | TokenKind::RBracket => {}
                 _ => break,
             }
             marked[at] = true;

@@ -223,6 +223,8 @@ pub struct MethodInfo {
 pub struct ClassInfo {
     /// The name as written.
     pub name: String,
+    /// The type parameters it declares, in order.
+    pub type_params: Vec<String>,
     /// The module that declares it.
     pub module: ModuleId,
     /// Whether it is visible to a module that imports this one.

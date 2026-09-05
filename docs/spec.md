@@ -1,9 +1,9 @@
-# The Noto language specification — 0.13
+# The Noto language specification — 0.14
 
 The language as implemented, section by section. Everything marked **not
 implemented** parses (the parser covers the full grammar) but is rejected
 during semantic analysis or lowering with `NOTO0500 … not implemented in
-Noto 0.13`. Nothing is silently accepted and miscompiled.
+Noto 0.14`. Nothing is silently accepted and miscompiled.
 
 This document describes behaviour; syntax details that deserve their own
 rationale live in [design/](design/).
@@ -295,7 +295,19 @@ return it and store it, and nothing else. That is not a rule of its own — `T`
 is not `Int`, so `+` does not apply, and it declares no fields, so `.x` does
 not resolve. Bounds would lift it and need interfaces, which do not exist.
 
-Not implemented: generic classes and enums, bounds, explicit type arguments.
+A class is generic the same way, and its parameters are in scope for its
+fields and methods:
+
+```noto
+class Pair<A, B>(val first: A, val second: B) {
+    fn swapped(): Pair<B, A> = Pair(second, first)
+}
+```
+
+What is expected of a call fills in what its arguments do not say, which is
+how `val s: Stack<Int> = emptyStack()` knows what it holds.
+
+Not implemented: generic enums, bounds, explicit type arguments.
 
 ## Lambdas
 
