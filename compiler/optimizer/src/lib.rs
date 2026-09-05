@@ -1,6 +1,6 @@
 //! Optimization passes over Noto IR.
 //!
-//! Noto 0.7 ships one pass, chosen because it is the one the lowering most
+//! Noto 0.8 ships one pass, chosen because it is the one the lowering most
 //! obviously needs: lowering emits a block per construct, and many of them end
 //! up empty or with a single predecessor. Removing them shrinks the code and
 //! makes the IR dumps readable without changing behaviour.

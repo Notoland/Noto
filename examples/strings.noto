@@ -1,0 +1,181 @@
+// Working with text.
+//
+// A `String` holds UTF-8, and everything here is measured in **bytes**:
+// `"joão".length` is 5, not 4. That is what a protocol, a file format and a
+// parser want. Characters need a decoder, and it does not exist yet.
+//
+// Only `length`, `byteAt` and `substring` are built into the compiler. The
+// rest of this module is written in Noto on top of them.
+
+/// Whether `text` begins with `prefix`.
+export fn startsWith(text: String, prefix: String): Bool {
+    if prefix.length > text.length { return false }
+    return text.substring(0, prefix.length) == prefix
+}
+
+/// Whether `text` ends with `suffix`.
+export fn endsWith(text: String, suffix: String): Bool {
+    if suffix.length > text.length { return false }
+    return text.substring(text.length - suffix.length, text.length) == suffix
+}
+
+/// The offset of the first `needle` in `text`, or `-1` when there is none.
+///
+/// An empty needle is found at the start, which is what makes
+/// `indexOf(text, "") == 0` rather than a special case every caller repeats.
+export fn indexOf(text: String, needle: String): Int {
+    if needle.length > text.length { return -1 }
+    var start = 0
+    val last = text.length - needle.length
+    while start <= last {
+        if text.substring(start, start + needle.length) == needle { return start }
+        start += 1
+    }
+    return -1
+}
+
+/// Whether `needle` appears anywhere in `text`.
+export fn contains(text: String, needle: String): Bool = indexOf(text, needle) >= 0
+
+/// `text` split on every occurrence of `separator`.
+///
+/// The result always has one more part than there are separators, so a
+/// trailing separator produces a trailing empty part — splitting is the
+/// inverse of joining, and dropping it would break that.
+export fn split(text: String, separator: String): [String] {
+    val parts: [String] = []
+    if separator.length == 0 {
+        parts.push(text)
+        return parts
+    }
+
+    var start = 0
+    var at = 0
+    while at + separator.length <= text.length {
+        if text.substring(at, at + separator.length) == separator {
+            parts.push(text.substring(start, at))
+            at += separator.length
+            start = at
+        } else {
+            at += 1
+        }
+    }
+    parts.push(text.substring(start, text.length))
+    return parts
+}
+
+/// `parts` written one after another with `separator` between them.
+export fn join(parts: [String], separator: String): String {
+    var out = ""
+    var index = 0
+    while index < parts.length {
+        if index > 0 { out += separator }
+        out += parts[index]
+        index += 1
+    }
+    return out
+}
+
+/// Whether a byte is a space, tab, carriage return or line feed.
+export fn isSpace(byte: Int): Bool =
+    byte == 32 || byte == 9 || byte == 13 || byte == 10
+
+/// `text` without the whitespace at either end.
+export fn trim(text: String): String {
+    var start = 0
+    while start < text.length && isSpace(text.byteAt(start)) { start += 1 }
+
+    var end = text.length
+    while end > start && isSpace(text.byteAt(end - 1)) { end -= 1 }
+
+    return text.substring(start, end)
+}
+
+/// Whether `text` is empty or only whitespace.
+export fn isBlank(text: String): Bool = trim(text).length == 0
+
+/// `text` written `times` times.
+export fn repeat(text: String, times: Int): String {
+    assert(times >= 0)
+    var out = ""
+    var done = 0
+    while done < times {
+        out += text
+        done += 1
+    }
+    return out
+}
+
+/// The character at `index`, as a one-byte string.
+///
+/// Only meaningful for text that is entirely ASCII; a multi-byte character
+/// would be cut in half.
+export fn asciiAt(text: String, index: Int): String = text.substring(index, index + 1)
+
+test "startsWith and endsWith look at the right end" {
+    assert(startsWith("hello world", "hello"))
+    assert(!startsWith("hello", "hello world"))
+    assert(startsWith("anything", ""))
+    assert(endsWith("hello world", "world"))
+    assert(!endsWith("world", "hello world"))
+}
+
+test "indexOf finds the first occurrence" {
+    assert(indexOf("hello world", "o") == 4)
+    assert(indexOf("hello world", "world") == 6)
+    assert(indexOf("hello", "z") == -1)
+    assert(indexOf("hello", "") == 0)
+    assert(indexOf("aaa", "aa") == 0)
+}
+
+test "contains agrees with indexOf" {
+    assert(contains("hello world", "lo w"))
+    assert(!contains("hello", "world"))
+}
+
+test "split produces one more part than separators" {
+    val parts = split("a,b,c", ",")
+    assert(parts.length == 3)
+    assert(parts[0] == "a")
+    assert(parts[2] == "c")
+
+    val trailing = split("a,", ",")
+    assert(trailing.length == 2)
+    assert(trailing[1] == "")
+
+    val none = split("abc", ",")
+    assert(none.length == 1)
+    assert(none[0] == "abc")
+}
+
+test "split and join are inverses" {
+    assert(join(split("a,b,c", ","), ",") == "a,b,c")
+    assert(join(split("a,,b", ","), ",") == "a,,b")
+}
+
+test "join writes the separator between parts only" {
+    assert(join(["a", "b", "c"], "-") == "a-b-c")
+    assert(join(["only"], "-") == "only")
+    assert(join([], "-") == "")
+}
+
+test "trim takes whitespace off both ends" {
+    assert(trim("  hello  ") == "hello")
+    assert(trim("hello") == "hello")
+    assert(trim("   ") == "")
+    assert(trim("") == "")
+    assert(isBlank("  "))
+    assert(!isBlank(" a "))
+}
+
+test "repeat writes the text that many times" {
+    assert(repeat("ab", 3) == "ababab")
+    assert(repeat("ab", 0) == "")
+}
+
+test "bytes are bytes, not characters" {
+    // A `String` is UTF-8, and `ã` takes two bytes of it.
+    assert("joão".length == 5)
+    assert("joao".length == 4)
+    assert(asciiAt("hello", 1) == "e")
+}

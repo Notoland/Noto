@@ -139,6 +139,10 @@ pub enum Routine {
     StringConcat,
     /// `string_length(string) -> length`.
     StringLength,
+    /// `string_byte_at(string, index) -> byte`. The index is checked.
+    StringByteAt,
+    /// `string_slice(string, start, end) -> string`. Both bounds are checked.
+    StringSlice,
     /// `list_push(list, value)`. Appends one element, growing the buffer
     /// when it is full.
     ListPush,
@@ -182,6 +186,8 @@ impl Routine {
             StringConcat,
             StringLength,
             StringEquals,
+            StringByteAt,
+            StringSlice,
             ListPush,
             IndexCheck,
             Assert,
@@ -209,6 +215,8 @@ impl Routine {
             StringConcat => "noto_rt_string_concat",
             StringLength => "noto_rt_string_length",
             StringEquals => "noto_rt_string_equals",
+            StringByteAt => "noto_rt_string_byte_at",
+            StringSlice => "noto_rt_string_slice",
             IndexCheck => "noto_rt_index_check",
             ListPush => "noto_rt_list_push",
             Assert => "noto_rt_assert",
@@ -223,8 +231,8 @@ impl Routine {
             Start | PrintlnEmpty | Newline => 0,
             Exit | Alloc | PrintString | PrintlnString | PrintInt | PrintlnInt | PrintBool
             | PrintlnBool | IntToString | BoolToString | StringLength | Assert => 1,
-            StringConcat | StringEquals | IndexCheck | ListPush => 2,
-            Write => 3,
+            StringConcat | StringEquals | IndexCheck | ListPush | StringByteAt => 2,
+            StringSlice | Write => 3,
         }
     }
 

@@ -1377,6 +1377,8 @@ fn intrinsic_for(builtin: Builtin) -> Intrinsic {
         // calling anything.
         Builtin::ListLength => Intrinsic::StringLength,
         Builtin::ListPush => Intrinsic::ListPush,
+        Builtin::StringByteAt => Intrinsic::StringByteAt,
+        Builtin::StringSubstring => Intrinsic::StringSlice,
         Builtin::PrintString => Intrinsic::PrintString,
         Builtin::PrintlnString => Intrinsic::PrintlnString,
         Builtin::PrintInt => Intrinsic::PrintInt,

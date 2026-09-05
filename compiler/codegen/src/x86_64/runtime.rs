@@ -8,7 +8,7 @@
 //!
 //! # The allocator
 //!
-//! Noto 0.7 allocates from a bump pointer over regions obtained with `mmap`
+//! Noto 0.8 allocates from a bump pointer over regions obtained with `mmap`
 //! and never frees. That is enough to run programs that build strings, and it
 //! is deliberately the simplest thing that is correct while the memory model
 //! is being designed; see `docs/rfcs/0002-memory-model.md`.
@@ -168,6 +168,8 @@ pub fn emit(
     emit_string_concat(assembler, labels);
     emit_string_length(assembler, labels);
     emit_string_equals(assembler, labels);
+    emit_string_byte_at(assembler, labels);
+    emit_string_slice(assembler, labels);
     emit_list_push(assembler, labels);
     emit_index_check(assembler, labels, data);
     emit_assert(assembler, labels, data);
@@ -708,6 +710,101 @@ fn times_eight(assembler: &mut Assembler, reg: Reg) {
     assembler.add(reg, reg);
     assembler.add(reg, reg);
     assembler.add(reg, reg);
+}
+
+/// `string_byte_at(string, index) -> byte`.
+///
+/// Bytes, not characters: a `String` holds UTF-8, so the byte at an index is
+/// not always a whole character. The index is checked against the length.
+fn emit_string_byte_at(assembler: &mut Assembler, labels: &RuntimeLabels) {
+    begin(assembler, labels, Routine::StringByteAt);
+    prologue(assembler, 2);
+
+    let string = -8;
+    let index = -16;
+    assembler.mov_mem_reg(Reg::Rbp, string, Reg::Rdi);
+    assembler.mov_mem_reg(Reg::Rbp, index, Reg::Rsi);
+
+    assembler.mov_reg_mem(Reg::Rsi, Reg::Rdi, STRING_LENGTH_OFFSET);
+    assembler.mov_reg_mem(Reg::Rdi, Reg::Rbp, index);
+    assembler.call(labels.get(Routine::IndexCheck));
+
+    assembler.mov_reg_mem(Reg::Rax, Reg::Rbp, string);
+    assembler.add_imm(Reg::Rax, STRING_DATA_OFFSET);
+    assembler.mov_reg_mem(Reg::Rcx, Reg::Rbp, index);
+    assembler.add(Reg::Rax, Reg::Rcx);
+    assembler.movzx_reg_mem8(Reg::Rax, Reg::Rax, 0);
+
+    epilogue(assembler);
+}
+
+/// `string_slice(string, start, end) -> string`.
+///
+/// Both bounds are checked, and both may equal the length: a slice ending at
+/// the end is the common case. `index_check` does the reporting, so an
+/// out-of-range slice fails exactly the way an out-of-range index does.
+fn emit_string_slice(assembler: &mut Assembler, labels: &RuntimeLabels) {
+    begin(assembler, labels, Routine::StringSlice);
+    prologue(assembler, 4);
+
+    let string = -8;
+    let start = -16;
+    let end = -24;
+    let result = -32;
+
+    assembler.mov_mem_reg(Reg::Rbp, string, Reg::Rdi);
+    assembler.mov_mem_reg(Reg::Rbp, start, Reg::Rsi);
+    assembler.mov_mem_reg(Reg::Rbp, end, Reg::Rdx);
+
+    // A valid end is 0..=length, so it is checked against length + 1.
+    assembler.mov_reg_mem(Reg::Rsi, Reg::Rdi, STRING_LENGTH_OFFSET);
+    assembler.add_imm(Reg::Rsi, 1);
+    assembler.mov_reg_mem(Reg::Rdi, Reg::Rbp, end);
+    assembler.call(labels.get(Routine::IndexCheck));
+
+    // A valid start is 0..=end, which also rejects a start past the end.
+    assembler.mov_reg_mem(Reg::Rsi, Reg::Rbp, end);
+    assembler.add_imm(Reg::Rsi, 1);
+    assembler.mov_reg_mem(Reg::Rdi, Reg::Rbp, start);
+    assembler.call(labels.get(Routine::IndexCheck));
+
+    // alloc(8 + end - start)
+    assembler.mov_reg_mem(Reg::Rdi, Reg::Rbp, end);
+    assembler.mov_reg_mem(Reg::Rcx, Reg::Rbp, start);
+    assembler.sub(Reg::Rdi, Reg::Rcx);
+    assembler.mov_reg_reg(Reg::Rdx, Reg::Rdi);
+    assembler.add_imm(Reg::Rdi, STRING_DATA_OFFSET);
+    assembler.call(labels.get(Routine::Alloc));
+    assembler.mov_mem_reg(Reg::Rbp, result, Reg::Rax);
+
+    assembler.mov_reg_mem(Reg::Rcx, Reg::Rbp, end);
+    assembler.mov_reg_mem(Reg::Rdx, Reg::Rbp, start);
+    assembler.sub(Reg::Rcx, Reg::Rdx);
+    assembler.mov_mem_reg(Reg::Rax, STRING_LENGTH_OFFSET, Reg::Rcx);
+
+    // rsi = source + 8 + start, rdi = result + 8, rcx = how many bytes
+    assembler.mov_reg_mem(Reg::Rsi, Reg::Rbp, string);
+    assembler.add_imm(Reg::Rsi, STRING_DATA_OFFSET);
+    assembler.mov_reg_mem(Reg::Rdx, Reg::Rbp, start);
+    assembler.add(Reg::Rsi, Reg::Rdx);
+    assembler.mov_reg_mem(Reg::Rdi, Reg::Rbp, result);
+    assembler.add_imm(Reg::Rdi, STRING_DATA_OFFSET);
+
+    let copy = assembler.label();
+    let done = assembler.label();
+    assembler.bind(copy);
+    assembler.cmp_imm(Reg::Rcx, 0);
+    assembler.jcc(Cond::Eq, done);
+    assembler.movzx_reg_mem8(Reg::Rax, Reg::Rsi, 0);
+    assembler.mov_mem_reg8(Reg::Rdi, 0, Reg::Rax);
+    assembler.add_imm(Reg::Rsi, 1);
+    assembler.add_imm(Reg::Rdi, 1);
+    assembler.sub_imm(Reg::Rcx, 1);
+    assembler.jmp(copy);
+    assembler.bind(done);
+
+    assembler.mov_reg_mem(Reg::Rax, Reg::Rbp, result);
+    epilogue(assembler);
 }
 
 /// `list_push(list, value)`: appends one element, growing the buffer when it

@@ -932,6 +932,39 @@ fn a_list_has_no_other_methods_yet() {
     );
 }
 
+// --- strings -----------------------------------------------------------------
+
+#[test]
+fn a_string_can_be_measured_read_and_sliced() {
+    check_ok(
+        "fn main() {\n    val s = \"hello\"\n    println(s.length)\n             println(s.byteAt(0))\n    println(s.substring(1, 3))\n}\n",
+    );
+}
+
+#[test]
+fn a_builtin_method_checks_its_arguments() {
+    check_error(
+        "fn main() {\n    println(\"hi\".byteAt(\"x\"))\n}\n",
+        "expected `Int`",
+    );
+    check_error(
+        "fn main() {\n    println(\"hi\".substring(0))\n}\n",
+        "`substring` takes 2 arguments",
+    );
+}
+
+#[test]
+fn byte_at_produces_an_integer_and_substring_a_string() {
+    check_error(
+        "fn main() {\n    val s: String = \"hi\".byteAt(0)\n}\n",
+        "expected `String`",
+    );
+    check_error(
+        "fn main() {\n    val n: Int = \"hi\".substring(0, 1)\n}\n",
+        "expected `Int`",
+    );
+}
+
 // --- enums -----------------------------------------------------------------
 
 #[test]

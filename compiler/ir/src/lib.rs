@@ -250,6 +250,10 @@ pub enum Intrinsic {
     IndexCheck,
     /// Appends one element to a list, growing it when full.
     ListPush,
+    /// The byte of a string at an index.
+    StringByteAt,
+    /// A new string holding the bytes between two offsets.
+    StringSlice,
     /// Aborts the program unless the argument is `true`.
     Assert,
     /// Ends the process with the given exit status.
@@ -275,6 +279,8 @@ impl Intrinsic {
             StringEquals => "string_equals",
             IndexCheck => "index_check",
             ListPush => "list_push",
+            StringByteAt => "string_byte_at",
+            StringSlice => "string_slice",
             Assert => "assert",
             Exit => "exit",
         }
@@ -288,6 +294,8 @@ impl Intrinsic {
             StringLength => IrType::I64,
             StringEquals => IrType::Bool,
             IndexCheck | ListPush => IrType::Unit,
+            StringByteAt => IrType::I64,
+            StringSlice => IrType::Str,
             _ => IrType::Unit,
         }
     }

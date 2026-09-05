@@ -738,3 +738,14 @@ fn a_compound_element_assignment_evaluates_the_index_once() {
     );
     assert_eq!(ir.matches("index_check").count(), 1, "one check, one address:\n{ir}");
 }
+
+#[test]
+fn a_string_method_with_parameters_passes_them_to_the_runtime() {
+    let ir = function_ir(
+        "fn part(s: String): String = s.substring(1, 3)\n",
+        "part",
+    );
+    assert!(ir.contains("intrinsic string_slice"), "{ir}");
+    assert!(ir.contains("1:i64"), "{ir}");
+    assert!(ir.contains("3:i64"), "{ir}");
+}

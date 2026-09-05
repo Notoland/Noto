@@ -35,6 +35,10 @@ pub enum Builtin {
     StringLength,
     /// `[T].length: Int`
     ListLength,
+    /// `String.byteAt(index: Int): Int`
+    StringByteAt,
+    /// `String.substring(start: Int, end: Int): String`
+    StringSubstring,
     /// `[T].push(value: T)`
     ///
     /// Its parameter is the receiver's element type, so it is checked where
@@ -53,6 +57,8 @@ impl Builtin {
             PrintlnString | PrintlnInt | PrintlnBool | PrintlnEmpty => "println",
             IntToString | BoolToString | StringToString => "toString",
             StringLength | ListLength => "length",
+            StringByteAt => "byteAt",
+            StringSubstring => "substring",
             ListPush => "push",
             Assert => "assert",
         }
@@ -65,6 +71,8 @@ impl Builtin {
             PrintString | PrintlnString => vec![store.string()],
             PrintInt | PrintlnInt => vec![store.int()],
             PrintBool | PrintlnBool | Assert => vec![store.bool()],
+            StringByteAt => vec![store.int()],
+            StringSubstring => vec![store.int(), store.int()],
             PrintlnEmpty | IntToString | BoolToString | StringToString | StringLength
             | ListLength | ListPush => Vec::new(),
         }
@@ -75,7 +83,8 @@ impl Builtin {
         use Builtin::*;
         match self {
             IntToString | BoolToString | StringToString => store.string(),
-            StringLength | ListLength => store.int(),
+            StringLength | ListLength | StringByteAt => store.int(),
+            StringSubstring => store.string(),
             _ => store.unit(),
         }
     }
@@ -85,7 +94,14 @@ impl Builtin {
         use Builtin::*;
         matches!(
             self,
-            IntToString | BoolToString | StringToString | StringLength | ListLength | ListPush
+            IntToString
+                | BoolToString
+                | StringToString
+                | StringLength
+                | ListLength
+                | ListPush
+                | StringByteAt
+                | StringSubstring
         )
     }
 
@@ -118,6 +134,8 @@ pub fn member(store: &TypeStore, receiver: TypeId, name: &str) -> Option<Builtin
     match (ty, name) {
         (Type::String, "toString") => Some(Builtin::StringToString),
         (Type::String, "length") => Some(Builtin::StringLength),
+        (Type::String, "byteAt") => Some(Builtin::StringByteAt),
+        (Type::String, "substring") => Some(Builtin::StringSubstring),
         (Type::List(_), "length") => Some(Builtin::ListLength),
         (Type::Primitive(Primitive::Bool), "toString") => Some(Builtin::BoolToString),
         (Type::Primitive(primitive), "toString") if primitive.is_integer() => {

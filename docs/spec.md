@@ -1,9 +1,9 @@
-# The Noto language specification — 0.7
+# The Noto language specification — 0.8
 
 The language as implemented, section by section. Everything marked **not
 implemented** parses (the parser covers the full grammar) but is rejected
 during semantic analysis or lowering with `NOTO0500 … not implemented in
-Noto 0.7`. Nothing is silently accepted and miscompiled.
+Noto 0.8`. Nothing is silently accepted and miscompiled.
 
 This document describes behaviour; syntax details that deserve their own
 rationale live in [design/](design/).
@@ -205,6 +205,28 @@ case's values — every case of it, including one carrying nothing.
 Not implemented: explicit case values (`Red = 1`), methods on an enum,
 generic enums, interfaces on an enum.
 
+## Strings
+
+A `String` holds UTF-8, and **everything about it is measured in bytes**:
+`"joão".length` is 5, not 4. That is what a protocol, a file format and a
+parser want; characters need a decoder, and there is not one yet.
+
+Three operations are built in:
+
+```noto
+"hello".length            // 5
+"hello".byteAt(1)         // 101, the byte value at that offset
+"hello".substring(1, 3)   // "el", from one offset up to another
+```
+
+Both `byteAt` and `substring` check their bounds, and a `substring` may end
+at the length. `+` joins two strings and `==` compares their contents rather
+than their addresses.
+
+Everything else — `indexOf`, `contains`, `startsWith`, `split`, `trim`,
+`join`, `repeat` — is written in Noto in `std/string.noto`, on top of those
+three.
+
 ## Lists
 
 ```noto
@@ -259,6 +281,10 @@ naturally. `;` still separates statements that share a line.
 type from the initialiser. Shadowing is allowed and scoping is lexical.
 Control flow: `if`/`else`, `when`, `while`, `loop`, `for i in expr`,
 `break`, `continue`, `return`. `defer` is not implemented.
+
+A `when` arm may hold a block: after `->`, a brace opens statements rather
+than a lambda. Braces holding a parameter list are still a lambda, so
+`else -> { n -> n + 1 }` is an arm producing a function.
 
 ## Types
 

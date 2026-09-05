@@ -1,4 +1,4 @@
-// Lists in Noto 0.7. Run the tests with `noto test examples/lists.noto`.
+// Lists in Noto 0.8. Run the tests with `noto test examples/lists.noto`.
 //
 // A list is a header — length, capacity, and a pointer to its elements — so
 // `push` can replace the buffer without invalidating anyone's pointer to the

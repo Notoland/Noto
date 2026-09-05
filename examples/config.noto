@@ -1,0 +1,128 @@
+// A parser written in Noto.
+//
+// It reads the `key = value` format a configuration file uses, with comments
+// and blank lines — the shape of a real text protocol, small enough to read.
+// Everything it needs comes from `strings`, which is itself written in Noto
+// on top of three compiler builtins.
+//
+//     noto test examples/config.noto
+//     noto run examples/config.noto
+
+import strings { trim, isBlank, indexOf, split, startsWith, join }
+
+class Setting(val key: String, val value: String)
+
+enum Entry {
+    Ignored,
+    Pair(setting: Setting),
+    Malformed(line: String)
+}
+
+/// Reads one line: a comment, a blank, a `key = value`, or something wrong.
+export fn readLine(line: String): Entry {
+    val text = trim(line)
+    if isBlank(text) { return Entry.Ignored }
+    if startsWith(text, "#") { return Entry.Ignored }
+
+    val separator = indexOf(text, "=")
+    if separator < 0 { return Entry.Malformed(text) }
+
+    val key = trim(text.substring(0, separator))
+    val value = trim(text.substring(separator + 1, text.length))
+    if key.length == 0 { return Entry.Malformed(text) }
+
+    return Entry.Pair(Setting(key, value))
+}
+
+/// Every setting in a document, in the order they were written.
+export fn parse(document: String): [Setting] {
+    val settings: [Setting] = []
+    for line in split(document, "\n") {
+        val entry = readLine(line)
+        when (entry) {
+            Pair(setting) -> settings.push(setting)
+            Malformed(text) -> println("ignoring `$text`")
+            Ignored -> {}
+        }
+    }
+    return settings
+}
+
+/// The value under `key`, or `fallback` when there is none.
+export fn lookup(settings: [Setting], key: String, fallback: String): String {
+    for setting in settings {
+        if setting.key == key { return setting.value }
+    }
+    return fallback
+}
+
+/// The document the tests and `main` read.
+///
+/// A `"""` literal keeps the line breaks, which is what makes this look like
+/// the file it stands for.
+fn document(): String = """# the server
+host = localhost
+port = 8080
+
+name = noto config
+empty =
+"""
+
+test "a comment and a blank line carry nothing" {
+    when (readLine("# a comment")) {
+        Ignored -> assert(true)
+        else -> assert(false)
+    }
+    when (readLine("   ")) {
+        Ignored -> assert(true)
+        else -> assert(false)
+    }
+}
+
+test "a pair is split on the first equals" {
+    when (readLine("  host = localhost  ")) {
+        Pair(setting) -> {
+            assert(setting.key == "host")
+            assert(setting.value == "localhost")
+        }
+        else -> assert(false)
+    }
+}
+
+test "a value may be empty and may itself contain an equals" {
+    when (readLine("empty =")) {
+        Pair(setting) -> assert(setting.value == "")
+        else -> assert(false)
+    }
+    when (readLine("expr = a=b")) {
+        Pair(setting) -> assert(setting.value == "a=b")
+        else -> assert(false)
+    }
+}
+
+test "a line without an equals is malformed" {
+    when (readLine("just words")) {
+        Malformed(text) -> assert(text == "just words")
+        else -> assert(false)
+    }
+}
+
+test "a whole document parses in order" {
+    val settings = parse(document())
+    assert(settings.length == 4)
+    assert(settings[0].key == "host")
+    assert(lookup(settings, "port", "none") == "8080")
+    assert(lookup(settings, "name", "none") == "noto config")
+    assert(lookup(settings, "missing", "none") == "none")
+}
+
+fn main() {
+    val settings = parse(document())
+    println("${settings.length} settings")
+
+    val lines: [String] = []
+    for setting in settings {
+        lines.push("${setting.key} -> ${setting.value}")
+    }
+    println(join(lines, "\n"))
+}

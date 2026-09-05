@@ -535,6 +535,34 @@ fn parses_when_with_ranges_and_else() {
 }
 
 #[test]
+fn a_when_arm_may_hold_a_block() {
+    // After `->` a brace opens statements, not a lambda: an arm that does
+    // several things is the common shape.
+    let expr = parse_expr_source(
+        "when (n) {\n        1 -> {\n            println(1)\n            println(2)\n        }\n        else -> {}\n    }",
+    );
+    let ExprKind::When { arms, .. } = &expr.kind else { panic!("a when") };
+    assert_eq!(arms.len(), 2);
+    let ExprKind::Block(block) = &arms[0].body.kind else {
+        panic!("the first arm holds a block, not {:?}", arms[0].body.kind)
+    };
+    assert_eq!(block.statements.len(), 2);
+    let ExprKind::Block(empty) = &arms[1].body.kind else { panic!("an empty block") };
+    assert!(empty.statements.is_empty());
+}
+
+#[test]
+fn a_when_arm_may_still_produce_a_lambda() {
+    let expr = parse_expr_source("when (n) {\n        else -> { x -> x }\n    }");
+    let ExprKind::When { arms, .. } = &expr.kind else { panic!("a when") };
+    assert!(
+        matches!(arms[0].body.kind, ExprKind::Lambda(_)),
+        "braces holding a parameter list are a lambda, not a block: {:?}",
+        arms[0].body.kind
+    );
+}
+
+#[test]
 fn parses_when_arms_with_several_patterns_and_guards() {
     let source = "when (value) {\n        0, 1 -> \"small\"\n        n if n < 0 -> \"negative\"\n        is String -> \"text\"\n        else -> \"big\"\n    }";
     let expr = parse_expr_source(source);

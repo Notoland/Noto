@@ -5,7 +5,7 @@ human or agent. Read this before touching anything.
 
 **Where the project stands:** the compiler is real and works end to end. A
 `.noto` file becomes a static native ELF executable with no LLVM, no libc, and
-no external toolchain. 488 tests pass, 0 fail, no warnings. The whole tool
+no external toolchain. 494 tests pass, 0 fail, no warnings. The whole tool
 set — `run`, `build`, `check`, `test`, `lint`, `fmt` — is implemented, and
 `class` gives the language its first object type.
 
@@ -62,7 +62,7 @@ noto/
 ├── test-runner/      noto-test-runner  `noto test`, one process per test  11 tests
 ├── lsp/              noto-lsp          STUB
 ├── debugger/         noto-debugger     STUB
-├── std/              math.noto — the first module
+├── std/              math.noto, string.noto
 ├── docs/             architecture, spec, design notes, RFCs
 ├── examples/         hello.noto, tests.noto, point.noto
 └── tests/            EMPTY
@@ -110,6 +110,9 @@ fn main() {
   `noto test`
 - `import`/`export`: a program is many files, one module each, resolved from
   the root file's directory
+- strings: `.length`, `.byteAt`, `.substring` are compiler builtins measured
+  in **bytes**; `std/string.noto` builds `indexOf`, `split`, `trim`, `join`
+  and the rest on top of them, in Noto
 - `[T]` lists: literals, `.length`, `.push`, indexing, element assignment and
   `for`, with every index bounds-checked at runtime. A list is a header of
   length, capacity and a data pointer, so growing one leaves every pointer to
@@ -296,7 +299,7 @@ RFC.
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
-cargo test --workspace          # 488 tests, must stay at 0 failures
+cargo test --workspace          # 494 tests, must stay at 0 failures
 cargo build --workspace
 cargo run -q -p noto-driver --example emit -- examples/hello.noto /tmp/hello && /tmp/hello
 ```

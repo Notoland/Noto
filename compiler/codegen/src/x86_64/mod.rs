@@ -477,6 +477,8 @@ fn routine_for(intrinsic: Intrinsic) -> Routine {
         Intrinsic::StringEquals => Routine::StringEquals,
         Intrinsic::IndexCheck => Routine::IndexCheck,
         Intrinsic::ListPush => Routine::ListPush,
+        Intrinsic::StringByteAt => Routine::StringByteAt,
+        Intrinsic::StringSlice => Routine::StringSlice,
         Intrinsic::Assert => Routine::Assert,
         Intrinsic::Exit => Routine::Exit,
     }

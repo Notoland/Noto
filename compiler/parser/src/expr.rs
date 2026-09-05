@@ -579,7 +579,7 @@ impl Parser<'_> {
     /// A lambda with no parameter list still takes one argument, bound to the
     /// implicit name `it`.
     fn parse_lambda_params(&mut self) -> Vec<Param> {
-        let Some(arrow) = self.find_lambda_arrow() else { return Vec::new() };
+        let Some(arrow) = self.find_lambda_arrow(0) else { return Vec::new() };
         let mut parameters = Vec::new();
 
         for _ in 0..arrow {
@@ -599,13 +599,32 @@ impl Parser<'_> {
         parameters
     }
 
+    /// Parses the body of a `when` arm.
+    ///
+    /// After `->`, a brace opens a block of statements — `Ignored -> { .. }`
+    /// is what an arm that does several things looks like. Everywhere else in
+    /// expression position a brace opens a lambda, and it still does here when
+    /// the braces hold a parameter list: `x -> { n -> n + 1 }` is an arm
+    /// producing a function.
+    fn parse_arm_body(&mut self) -> Expr {
+        // The lookahead starts past the brace, which is where a parameter
+        // list would be.
+        if self.check(&TokenKind::LBrace) && self.find_lambda_arrow(1).is_none() {
+            let start = self.peek_span();
+            let block = self.parse_block();
+            let span = start.to(block.span);
+            return self.expr(ExprKind::Block(block), span);
+        }
+        self.parse_expr()
+    }
+
     /// Looks ahead for the `->` that separates a lambda's parameters from its
     /// body, returning how many tokens precede it.
     ///
     /// The search stops at the first token that cannot appear in a parameter
     /// list, so `{ a + b }` is a body and `{ a, b -> a + b }` is not.
-    fn find_lambda_arrow(&self) -> Option<usize> {
-        let mut offset = 0usize;
+    fn find_lambda_arrow(&self, from: usize) -> Option<usize> {
+        let mut offset = from;
         loop {
             match &self.peek_nth(offset).kind {
                 TokenKind::Arrow => return Some(offset),
@@ -690,7 +709,7 @@ impl Parser<'_> {
                 let condition = self.parse_condition();
                 let guard = Some(WhenGuard { condition });
                 self.expect(&TokenKind::Arrow);
-                let body = self.parse_expr();
+                let body = self.parse_arm_body();
                 let span = arm_start.to(body.span);
                 arms.push(WhenArm { patterns: Vec::new(), guard, body, is_else: false, span });
                 self.eat(&TokenKind::Comma);
@@ -714,7 +733,7 @@ impl Parser<'_> {
             };
 
             self.expect(&TokenKind::Arrow);
-            let body = self.parse_expr();
+            let body = self.parse_arm_body();
             let span = arm_start.to(body.span);
 
             if let Some(previous) = seen_else {
