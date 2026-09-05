@@ -326,7 +326,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "declarations inside a function body are not supported yet",
                     )
-                    .with_primary(stmt.span, "not implemented in Noto 0.14")
+                    .with_primary(stmt.span, "not implemented in Noto 0.15")
                     .with_help("move the declaration to the top level of the file"),
                 );
                 self.store.unit()
@@ -410,7 +410,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this pattern is not supported in a binding yet",
                     )
-                    .with_primary(pattern.span, "not implemented in Noto 0.14")
+                    .with_primary(pattern.span, "not implemented in Noto 0.15")
                     .with_help("bind a name, a tuple of names, or `_`"),
                 );
             }
@@ -437,7 +437,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         format!("cannot iterate over a `{rendered}` yet"),
                     )
-                    .with_primary(iterable.span, "not iterable in Noto 0.14")
+                    .with_primary(iterable.span, "not iterable in Noto 0.15")
                     .with_help("iterate over a range, as in `for i in 0..10`"),
                 );
                 self.store.error()
@@ -508,7 +508,7 @@ impl Checker<'_> {
                     let ty = self.check_expr_expecting(bound, int);
                     self.expect_assignable(ty, int, bound.span, None);
                 }
-                // Ranges exist only inside `for` and `when` in Noto 0.14; there
+                // Ranges exist only inside `for` and `when` in Noto 0.15; there
                 // is no first-class `Range` type to give them yet.
                 self.store.unit()
             }
@@ -529,7 +529,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this expression is not supported by this compiler yet",
                     )
-                    .with_primary(expr.span, "not implemented in Noto 0.14"),
+                    .with_primary(expr.span, "not implemented in Noto 0.15"),
                 );
                 self.store.error()
             }
@@ -633,7 +633,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "an async lambda is not supported by this compiler yet",
                 )
-                .with_primary(expr.span, "not implemented in Noto 0.14"),
+                .with_primary(expr.span, "not implemented in Noto 0.15"),
             );
             return self.store.error();
         }
@@ -652,6 +652,7 @@ impl Checker<'_> {
             module: self.current_module,
             is_exported: false,
             type_params: Vec::new(),
+            witness_params: Vec::new(),
             def: None,
             is_lambda: true,
             captures: Vec::new(),
@@ -1271,7 +1272,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "`in` is not supported outside a `when` arm yet",
                     )
-                    .with_primary(span, "not implemented in Noto 0.14"),
+                    .with_primary(span, "not implemented in Noto 0.15"),
                 );
                 bool_ty
             }
@@ -1774,7 +1775,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this pattern is not supported by this compiler yet",
                     )
-                    .with_primary(pattern.span, "not implemented in Noto 0.14"),
+                    .with_primary(pattern.span, "not implemented in Noto 0.15"),
                 );
             }
         }
@@ -1939,7 +1940,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "explicit type arguments are not supported by this compiler yet",
                 )
-                .with_primary(expr.span, "not implemented in Noto 0.14"),
+                .with_primary(expr.span, "not implemented in Noto 0.15"),
             );
         }
 
@@ -1950,7 +1951,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "named arguments are not supported by this compiler yet",
                     )
-                    .with_primary(name.span, "not implemented in Noto 0.14")
+                    .with_primary(name.span, "not implemented in Noto 0.15")
                     .with_help("pass the arguments positionally"),
                 );
             }
@@ -2030,7 +2031,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "safe calls are not supported by this compiler yet",
                     )
-                    .with_primary(expr.span, "not implemented in Noto 0.14"),
+                    .with_primary(expr.span, "not implemented in Noto 0.15"),
                 );
                 return self.store.error();
             }
@@ -2067,6 +2068,16 @@ impl Checker<'_> {
                 let _ = class;
                 self.record_resolution(call.callee.id, Resolution::Method(function));
                 return self.check_method_arguments_with(expr, call, function, &bindings);
+            }
+
+            // A receiver whose type is a bounded parameter: the member is the
+            // one the bound promised, and the call goes through the witness.
+            if let Some((witness, slot, required)) = self.bound_member(base, &name.name) {
+                self.record_resolution(
+                    call.callee.id,
+                    Resolution::InterfaceMethod { witness, slot },
+                );
+                return self.check_bound_call(expr, call, base, &required);
             }
 
             match builtins::member(&self.store, base, &name.name) {
@@ -2259,7 +2270,7 @@ impl Checker<'_> {
         // actually bound to. A bound is checked at every call, never at the
         // declaration: the declaration only says what is required.
         if let Some(def) = info_def(&self.functions[function.0 as usize]) {
-            self.check_bounds(def, &type_params, &bound, expr.span);
+            self.check_bounds(def, &type_params, &bound, expr);
         }
 
         let result = self.store.substitute(result, &bound);
@@ -2267,26 +2278,92 @@ impl Checker<'_> {
         result
     }
 
+    /// Checks a call of a member reached through a bound.
+    ///
+    /// The signature is the interface's, with `Self` read as the receiver —
+    /// which here is the type parameter itself, not a concrete type, so
+    /// `other: Self` means another `T` and nothing else will do.
+    fn check_bound_call(
+        &mut self,
+        expr: &Expr,
+        call: &noto_ast::CallExpr,
+        receiver: TypeId,
+        required: &crate::analysis::InterfaceMethod,
+    ) -> TypeId {
+        let bindings = HashMap::from([((self.self_def(required), 0u32), receiver)]);
+        let expected: Vec<TypeId> = required
+            .parameters
+            .iter()
+            .map(|ty| self.store.substitute(*ty, &bindings))
+            .collect();
+
+        self.check_argument_count(expr.span, call.arguments.len(), expected.len(), "this method");
+        for (argument, expected) in call.arguments.iter().zip(&expected) {
+            let found = self.check_expr_expecting(&argument.value, *expected);
+            self.expect_assignable(found, *expected, argument.value.span, None);
+        }
+        for argument in call.arguments.iter().skip(expected.len()) {
+            self.check_expr(&argument.value);
+        }
+
+        let result = self.store.substitute(required.result, &bindings);
+        self.record_type(call.callee.id, result);
+        result
+    }
+
+    /// The declaration `Self` is parameter 0 of, for a required method.
+    ///
+    /// A member's types were resolved inside its interface, so any `Self` in
+    /// them carries that interface's def; finding it back is what lets the
+    /// receiver be substituted in.
+    fn self_def(&self, required: &crate::analysis::InterfaceMethod) -> noto_types::DefId {
+        required
+            .parameters
+            .iter()
+            .chain(std::iter::once(&required.result))
+            .find_map(|ty| match self.store.get(*ty) {
+                Type::Parameter { def, .. } => Some(*def),
+                _ => None,
+            })
+            .unwrap_or(noto_types::DefId::ERROR)
+    }
+
     /// Reports every type argument that does not satisfy its parameter's
     /// bound.
+    /// Also records where each witness comes from, so that lowering appends
+    /// arguments without working anything out for itself. The walk is
+    /// parameter by parameter, bound by bound — the order the callee declares
+    /// its hidden parameters in.
     fn check_bounds(
         &mut self,
         def: noto_types::DefId,
         type_params: &[String],
         bound: &HashMap<(noto_types::DefId, u32), TypeId>,
-        span: Span,
+        expr: &Expr,
     ) {
+        let mut sources = Vec::new();
         for (index, parameter) in type_params.iter().enumerate() {
             let Some(required) = self.type_param_bounds.get(&(def, index as u32)).cloned() else {
                 continue;
             };
             let Some(argument) = bound.get(&(def, index as u32)).copied() else { continue };
             for interface in required {
-                if self.satisfies(argument, interface) {
+                if !self.satisfies(argument, interface) {
+                    self.report_unsatisfied_bound(parameter, argument, interface, expr.span);
                     continue;
                 }
-                self.report_unsatisfied_bound(parameter, argument, interface, span);
+                match self.witness_source(argument, interface) {
+                    Some(source) => sources.push(source),
+                    // The bound holds but nothing can carry it here — a
+                    // primitive, or a parameter of an enclosing declaration
+                    // that takes no witness. Lowering refuses rather than
+                    // passing something arbitrary.
+                    None => return,
+                }
             }
+        }
+        if !sources.is_empty() {
+            self.witness_arguments.insert(expr.id, sources);
         }
     }
 
@@ -2705,7 +2782,7 @@ impl Checker<'_> {
                 );
                 return self.store.error();
             }
-            self.check_bounds(def, &type_params, &bound, expr.span);
+            self.check_bounds(def, &type_params, &bound, expr);
             self.store.substitute(ty, &bound)
         };
 

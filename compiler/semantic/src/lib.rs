@@ -26,6 +26,7 @@ pub use analysis::{
     Analysis, ClassId, ClassInfo, ConstId, ConstInfo, ConstValue, EnumCaseInfo, EnumId, EnumInfo,
     FieldInfo, FunctionId, FunctionInfo, InterfaceId, InterfaceInfo, InterfaceMethod,
     InterfaceProperty, LocalId, LocalInfo, MethodInfo, ModuleId, PropertyInfo, Resolution, TestInfo,
+    WitnessParam, WitnessSource,
 };
 
 /// The name of the type an interface's members stand for.
@@ -183,6 +184,8 @@ struct Checker<'sink> {
     interfaces: Vec<InterfaceInfo>,
     /// The bounds on every type parameter declared anywhere in the program.
     type_param_bounds: HashMap<(noto_types::DefId, u32), Vec<InterfaceId>>,
+    /// The witnesses each call passes, keyed by the call expression.
+    witness_arguments: HashMap<noto_ast::NodeId, Vec<WitnessSource>>,
     tests: Vec<TestInfo>,
     /// The module whose declarations are being collected or checked.
     current_module: ModuleId,
@@ -240,6 +243,7 @@ impl<'sink> Checker<'sink> {
             enums: Vec::new(),
             interfaces: Vec::new(),
             type_param_bounds: HashMap::new(),
+            witness_arguments: HashMap::new(),
             tests: Vec::new(),
             current_module: ModuleId::ROOT,
             modules: vec![String::new()],
@@ -268,6 +272,7 @@ impl<'sink> Checker<'sink> {
             enums: self.enums,
             interfaces: self.interfaces,
             type_param_bounds: self.type_param_bounds,
+            witness_arguments: self.witness_arguments,
             modules: self.modules,
             tests: self.tests,
             entry: self.entry,

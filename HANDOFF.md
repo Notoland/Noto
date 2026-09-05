@@ -1,11 +1,11 @@
 # Noto — Handoff
 
-State of the project at **0.14**. Written for whoever picks the work up next,
+State of the project at **0.15**. Written for whoever picks the work up next,
 human or agent. Read this before touching anything.
 
 **Where the project stands:** the compiler is real and works end to end. A
 `.noto` file becomes a static native ELF executable with no LLVM, no libc and
-no external toolchain. 587 tests pass, 0 fail, no warnings. The whole tool
+no external toolchain. 595 tests pass, 0 fail, no warnings. The whole tool
 set — `run`, `build`, `check`, `test`, `lint`, `fmt` — is implemented, and so
 is enough of the language to write real programs in it: `examples/wc.noto` is
 a `wc` that prints the same numbers as the system one.
@@ -74,7 +74,7 @@ noto/
 │   ├── ast/          noto-ast          syntax tree + visitor                  3 tests
 │   ├── parser/       noto-parser       recursive descent + precedence        60 tests
 │   ├── types/        noto-types        types, interning, unification         19 tests
-│   ├── semantic/     noto-semantic     name resolution + type checking      232 tests
+│   ├── semantic/     noto-semantic     name resolution + type checking      240 tests
 │   ├── ir/           noto-ir           Noto IR + textual form                13 tests
 │   ├── lower/        noto-lower        AST -> Noto IR                        62 tests
 │   ├── optimizer/    noto-optimizer    IR passes                              4 tests
@@ -170,14 +170,20 @@ fn main() {
   Conformance is nominal, declared at the type, and costs nothing at runtime —
   an interface with only abstract members emits no code, so an implementing
   class is laid out exactly as it was
-- bounds — `fn firstOf<T: Comparable>(xs: [T]): T`, `class Holder<T: Sized>` —
-  checked at **every call and construction**, never at the declaration, with
-  `NOTO0413` naming what the argument would have to implement. A bound is
-  satisfied through what an interface extends, so a `T: Ordered` may be passed
-  where a `U: Comparable` is wanted. What a bound does **not** do yet is let
-  the body call through it: that needs the witness, so `x.compareTo(y)` on a
-  bounded `T` is still `NOTO0404` — and the message says the bound is why it
-  looked. Witnesses and default bodies are **not** here; see RFC 0003
+- bounds — `fn largest<T: Comparable>(xs: [T]): T` — checked at **every call
+  and construction**, never at the declaration, with `NOTO0413` naming what the
+  argument would have to implement. A bound is satisfied through what an
+  interface extends, so a `T: Ordered` may be passed where a `U: Comparable` is
+  wanted
+- **witness dispatch**: a bounded function reaches the members its bound
+  promised. It is still compiled **once** — the witness is a static table of
+  the concrete type's implementations, passed as a hidden argument appended
+  after everything written in source. That is the only argument in the language
+  the signature does not show, and the only thing generics do that is not free:
+  one pointer per bound, paid only by code that uses one. A generic caller
+  passes on the witness it was handed rather than building one. Bounds on a
+  **class** are checked but do not dispatch — a class would carry its witness
+  in a field, and that is not built
 - inside a method a bare name is the receiver's member, and `p?.x` reads a
   field or property through a nullable receiver, producing a nullable result
 - lambdas: a value of type `fn(A): B`, capturing by value into a closure of
@@ -207,7 +213,7 @@ fn main() {
 
 Everything below **parses** (the parser covers the full language) but is
 rejected during semantic analysis or lowering with `NOTO0500 … not implemented
-in Noto 0.14`. Nothing is silently accepted and miscompiled.
+in Noto 0.15`. Nothing is silently accepted and miscompiled.
 
 | Construct | Rejected in | Notes |
 |---|---|---|
@@ -238,41 +244,42 @@ Everything the original handoff listed under this heading — the CLI, the
 documentation, the tooling, the object model, modules, enums, generics — is
 done. What follows is what is left, ordered by what unblocks the most.
 
-### 5.1 Interfaces and bounds — the biggest single unlock
+### 5.1 Interfaces and bounds — mostly landed
 
-**Interfaces themselves have landed**, as far as declaring and implementing
-them goes: [RFC 0003](docs/rfcs/0003-interfaces-and-bounds.md) settled the
-semantics (nominal, declared at the type, erased) and the checker enforces
-them. `examples/interfaces.noto` builds and runs.
+[RFC 0003](docs/rfcs/0003-interfaces-and-bounds.md) settled the semantics
+(nominal, declared at the type, erased, one witness pointer per bound) and the
+compiler implements them for **functions**, end to end:
+`examples/interfaces.noto` builds to a native binary and `largest` orders
+values of two different types from one compiled copy.
 
-**Bounds are declared and enforced**, but they do not dispatch. `<T:
-Comparable>` is checked at every call and construction, so nothing that fails
-to implement the interface can reach the function — but the body still cannot
-call `compareTo` on its `T`, because there is nothing to call through.
+What is left, in the order it wants to go in:
 
-That last step is what unblocks the rest. Nobody can write a `Map<K, V>`
-today, because comparing two `K` values needs a call on a type parameter.
+1. **Built-in conformances for the primitives.** `Int: Comparable`,
+   `String: Comparable`, `Hashable` on both. Without them a bound is useless on
+   the types most programs hold — `largest([1, 2, 3])` is `NOTO0413` today —
+   and the user cannot fix it, because `class Int` cannot be opened. The
+   compiler needs a fixed table it knows by name, and the methods it names have
+   to exist somewhere: that is the piece to design first, since `Int.compareTo`
+   is not a function anything has lowered.
+2. **Bounds on a class that dispatch.** `class SortedList<T: Comparable>` is
+   checked but its methods cannot reach the bound. A class carries its witness
+   as a hidden field written at construction, which is one more field in the
+   layout and one more argument to `<init>`.
+3. **Property requirements through a bound.** `val size: Int` on an interface
+   is checked at the implementing class but cannot be read through a `T`: the
+   witness holds method pointers only, and a class satisfying a requirement
+   with a plain *field* has no accessor function to point at. Synthesising one
+   is the work.
+4. **Default method bodies.** Rejected today. Now that a witness exists they
+   are reachable: a default is a function like any other, and the slot points
+   at it when the implementer does not override.
+5. **Generic interfaces** (`interface Into<T>`), deliberately deferred by RFC
+   0003 because they turn "at most once" into "at most once per type argument
+   tuple" and bring coherence questions back.
 
-The order the remaining work wants to go in:
-
-1. **Witnesses, with member resolution through the bound.** These are one
-   step, not two: making `best.compareTo(x)` type check without also lowering
-   it would mean a program that passes `noto check` and cannot be built. A
-   bounded generic function takes one hidden pointer per bound — a static
-   table of the concrete type's implementations. This is the first argument in
-   the language that is not in the source signature, and the first thing
-   generics do that is not free.
-2. **Bounded generic classes.** The witness becomes a hidden field, written at
-   construction from the call-site witness.
-3. **Default method bodies**, which are what step 1 makes reachable, and the
-   built-in conformance table for the primitives (`Int: Comparable`, ...)
-   without which a bound is useless on the types most programs actually hold —
-   `firstOf([1, 2, 3])` is `NOTO0413` today.
-
-RFC 0003's "Still unresolved" section lists what is not decided yet — witness
-representation, whether the compiler knows `Eq`/`Ord` by name, and whether a
-bound may reference the enclosing type parameters. Answer those there, not in
-a commit.
+Answer RFC 0003's "Still unresolved" section there, not in a commit: whether
+the compiler knows `Eq`/`Ord` by name, and whether a bound may reference the
+enclosing type parameters.
 
 This also unblocks `data class` (structural equality is an interface a class
 implements), sorting, and hashing.
@@ -389,7 +396,7 @@ RFC.
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
-cargo test --workspace          # 587 tests, must stay at 0 failures
+cargo test --workspace          # 595 tests, must stay at 0 failures
 cargo build --workspace         # must stay at 0 warnings
 
 # The Rust tests are half the suite. Every .noto file carries its own, and a

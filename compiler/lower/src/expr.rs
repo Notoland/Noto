@@ -3,7 +3,7 @@
 use crate::{lower_type, Builder};
 use noto_ast::{BinaryOp, Expr, ExprKind, Literal, StringSegment, UnaryOp};
 use noto_ir::{BinOp, Const, InstKind, Intrinsic, IrType, Operand, Terminator, UnOp};
-use noto_semantic::{Builtin, Resolution};
+use noto_semantic::{Builtin, Resolution, WitnessSource};
 use noto_span::Span;
 
 impl Builder<'_> {
@@ -771,6 +771,14 @@ impl Builder<'_> {
             return self.lower_method_call(method, call, expr);
         }
 
+        // A member reached through a bound: the target is not known here, so
+        // it is loaded out of the witness this function was handed.
+        if let Some(Resolution::InterfaceMethod { witness, slot }) =
+            self.analysis.resolution(call.callee.id)
+        {
+            return self.lower_bound_call(witness, slot, call, expr);
+        }
+
         let Some(Resolution::Function(function)) = self.analysis.resolution(call.callee.id)
         else {
             // Nothing names the callee, so it is a value holding a function:
@@ -788,8 +796,14 @@ impl Builder<'_> {
             return self.unsupported(expr.span, "calling this function");
         };
 
-        let arguments: Vec<Operand> =
+        let mut arguments: Vec<Operand> =
             call.arguments.iter().map(|argument| self.lower_expr(&argument.value)).collect();
+        // A bounded callee takes one witness per bound after everything
+        // written at the call. The checker settled which, and in what order.
+        match self.witness_operands(expr) {
+            Ok(witnesses) => arguments.extend(witnesses),
+            Err(what) => return self.unsupported(expr.span, what),
+        }
         let result = self.program.function(callee).result;
 
         if result.is_unit() {
@@ -799,6 +813,106 @@ impl Builder<'_> {
             self.emit_value(result, expr.span, |dest| InstKind::Call {
                 dest: Some(dest),
                 callee,
+                arguments,
+            })
+        }
+    }
+
+    /// Materialises the witnesses a call passes, in the callee's order.
+    ///
+    /// A concrete type gets the address of a static table; a caller that is
+    /// itself generic passes on the one it was handed.
+    fn witness_operands(&mut self, expr: &Expr) -> Result<Vec<Operand>, &'static str> {
+        let Some(sources) = self.analysis.witness_arguments.get(&expr.id).cloned() else {
+            return Ok(Vec::new());
+        };
+
+        let mut operands = Vec::with_capacity(sources.len());
+        for source in sources {
+            let operand = match source {
+                WitnessSource::Forwarded(position) => {
+                    let Some(slot) = self.witness_slot(position) else {
+                        return Err("passing on a witness this function does not take");
+                    };
+                    self.emit_value(IrType::Ptr, expr.span, |dest| InstKind::LoadLocal {
+                        dest,
+                        slot,
+                    })
+                }
+                WitnessSource::Concrete { class, interface } => {
+                    let Some(witness) = self.witness_table(class, interface) else {
+                        return Err("building a witness for this type");
+                    };
+                    self.emit_value(IrType::Ptr, expr.span, |dest| InstKind::WitnessAddr {
+                        dest,
+                        witness,
+                    })
+                }
+            };
+            operands.push(operand);
+        }
+        Ok(operands)
+    }
+
+    /// Interns the table of one class's implementations of one interface.
+    ///
+    /// The slot order is [`Analysis::witness_members`] and nothing else, which
+    /// is the same function every call site indexes with.
+    fn witness_table(
+        &mut self,
+        class: noto_semantic::ClassId,
+        interface: noto_semantic::InterfaceId,
+    ) -> Option<noto_ir::WitnessId> {
+        let info = self.analysis.class(class);
+        let name = format!("{}:{}", info.name, self.analysis.interface(interface).name);
+
+        let mut methods = Vec::new();
+        for (_, member) in self.analysis.witness_members(interface) {
+            let method = info.method(&member)?;
+            methods.push(self.func_id_of(method.function)?);
+        }
+        Some(self.program.intern_witness(&name, methods))
+    }
+
+    /// Loads a member out of a witness and calls it with the receiver first.
+    fn lower_bound_call(
+        &mut self,
+        witness: u32,
+        slot: u32,
+        call: &noto_ast::CallExpr,
+        expr: &Expr,
+    ) -> Operand {
+        let Some(table_slot) = self.witness_slot(witness) else {
+            return self.unsupported(expr.span, "reaching a witness this function does not take");
+        };
+
+        let object = match &call.callee.kind {
+            ExprKind::Member { receiver, .. } => self.lower_expr(receiver),
+            _ => self.receiver(expr.span),
+        };
+
+        let table = self.emit_value(IrType::Ptr, expr.span, |dest| InstKind::LoadLocal {
+            dest,
+            slot: table_slot,
+        });
+        let target = self.emit_value(IrType::Ptr, expr.span, |dest| InstKind::Load {
+            dest,
+            address: table,
+            offset: slot * 8,
+        });
+
+        let mut arguments = vec![object];
+        arguments
+            .extend(call.arguments.iter().map(|argument| self.lower_expr(&argument.value)));
+
+        let result = self.type_of(call.callee.id);
+        if result.is_unit() {
+            self.push(InstKind::CallIndirect { dest: None, target, arguments }, expr.span);
+            Operand::Const(Const::Unit)
+        } else {
+            self.emit_value(result, expr.span, |dest| InstKind::CallIndirect {
+                dest: Some(dest),
+                target,
                 arguments,
             })
         }

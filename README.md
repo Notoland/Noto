@@ -23,7 +23,7 @@ Hello, Noto!
 
 ## Status
 
-**Noto is in early development.** Version 0.14 is a working compiler for a real
+**Noto is in early development.** Version 0.15 is a working compiler for a real
 subset of the language, not a finished product. The pipeline runs end to end:
 source becomes a native Linux x86-64 executable that you can run.
 
@@ -95,8 +95,10 @@ is compiled to a function taking the receiver first, so it spends one of the
 six argument registers and takes at most five parameters of its own.
 A class may implement interfaces — `class Version(val major: Int): Comparable`
 — and the checker enforces every member they require, with `Self` read as the
-implementing type. Inheritance is not implemented, and neither are bounds, so
-nothing generic can call an interface member yet.
+implementing type. A bounded generic function reaches those members through a
+witness passed as a hidden argument, so `fn largest<T: Comparable>` is compiled
+once and orders values of any type that promised it can be ordered. Inheritance
+is not implemented, and the primitive types do not satisfy a bound yet.
 
 Enums:
 

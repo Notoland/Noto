@@ -43,7 +43,7 @@ impl Checker<'_> {
                 codes::UNSUPPORTED_CONSTRUCT,
                 format!("{what} are not supported by this compiler yet"),
             )
-            .with_primary(span, "not implemented in Noto 0.14")
+            .with_primary(span, "not implemented in Noto 0.15")
         };
 
         if let Some(param) = decl.type_params.first() {
@@ -150,7 +150,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "generic interfaces are not supported by this compiler yet",
                 )
-                .with_primary(param.span, "not implemented in Noto 0.14")
+                .with_primary(param.span, "not implemented in Noto 0.15")
                 .with_note(
                     "a type could implement `Into<Int>` and `Into<String>` both, and \
                      which one a bound picks is left open by RFC 0003",
@@ -264,7 +264,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "default accessors on an interface property are not supported by this compiler yet",
                     )
-                    .with_primary(property.span, "not implemented in Noto 0.14")
+                    .with_primary(property.span, "not implemented in Noto 0.15")
                     .with_note("reaching one means dispatching through a witness, which arrives with bounds"),
                 );
                 continue;
@@ -327,7 +327,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "generic methods are not supported by this compiler yet",
                     )
-                    .with_primary(param.span, "not implemented in Noto 0.14"),
+                    .with_primary(param.span, "not implemented in Noto 0.15"),
                 );
                 continue;
             }
@@ -337,7 +337,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "default method bodies are not supported by this compiler yet",
                     )
-                    .with_primary(body.span, "not implemented in Noto 0.14")
+                    .with_primary(body.span, "not implemented in Noto 0.15")
                     .with_note(
                         "a default is reached through a witness, which arrives with bounds — RFC 0003",
                     )
@@ -428,6 +428,31 @@ impl Checker<'_> {
         }
     }
 
+    /// The hidden witness parameters a declaration takes, in order.
+    ///
+    /// Parameter by parameter, bound by bound, so the order is a consequence
+    /// of how the signature was written rather than a choice anything else has
+    /// to remember.
+    pub(crate) fn witness_params_for(
+        &self,
+        def: Option<noto_types::DefId>,
+        count: usize,
+    ) -> Vec<crate::analysis::WitnessParam> {
+        let Some(def) = def else { return Vec::new() };
+        (0..count as u32)
+            .flat_map(|type_param| {
+                self.type_param_bounds
+                    .get(&(def, type_param))
+                    .into_iter()
+                    .flatten()
+                    .map(move |interface| crate::analysis::WitnessParam {
+                        type_param,
+                        interface: *interface,
+                    })
+            })
+            .collect()
+    }
+
     /// Whether `ty` satisfies `interface`.
     ///
     /// Conformance is nominal, so this is a lookup rather than a comparison of
@@ -461,6 +486,96 @@ impl Checker<'_> {
         let mut seen: Vec<crate::analysis::InterfaceId> = Vec::new();
         while let Some(id) = queue.pop() {
             if id == interface {
+                return true;
+            }
+            if seen.contains(&id) {
+                continue;
+            }
+            seen.push(id);
+            queue.extend_from_slice(&self.interfaces[id.0 as usize].extends);
+        }
+        false
+    }
+
+    /// The member a bound on `ty` reaches, and where to find it at runtime.
+    ///
+    /// Returns the position of the witness among the enclosing function's
+    /// hidden parameters, the slot to load from it, and the signature to check
+    /// the call against.
+    ///
+    /// It resolves nothing unless the function being checked is the one that
+    /// declared the parameter *and* actually receives a witness for it. That
+    /// is what keeps a bounded class's method — which has no such parameter,
+    /// because a class carries its witness in a field and that is not built
+    /// yet — reporting rather than compiling to a load from nowhere.
+    pub(crate) fn bound_member(
+        &self,
+        ty: TypeId,
+        name: &str,
+    ) -> Option<(u32, u32, crate::analysis::InterfaceMethod)> {
+        let Type::Parameter { def, index, .. } = self.store.get(ty) else { return None };
+        let (def, index) = (*def, *index);
+
+        let info = &self.functions[self.current_function?.0 as usize];
+        if info.def != Some(def) {
+            return None;
+        }
+
+        for (position, parameter) in info.witness_params.iter().enumerate() {
+            if parameter.type_param != index {
+                continue;
+            }
+            let members = crate::analysis::witness_members(&self.interfaces, parameter.interface);
+            let Some(slot) = members.iter().position(|(_, member)| member == name) else {
+                continue;
+            };
+            let owner = members[slot].0;
+            let method = self.interfaces[owner.0 as usize].method(name)?.clone();
+            return Some((position as u32, slot as u32, method));
+        }
+        None
+    }
+
+    /// Where the witness for `(ty, interface)` comes from at a call.
+    ///
+    /// A concrete type gets a static table. A type parameter cannot: the
+    /// caller is itself generic, so it passes on the witness it was given.
+    pub(crate) fn witness_source(
+        &self,
+        ty: TypeId,
+        interface: crate::analysis::InterfaceId,
+    ) -> Option<crate::analysis::WitnessSource> {
+        match self.store.get(ty) {
+            Type::Named { .. } => {
+                let (class, _) = self.class_of(ty)?;
+                Some(crate::analysis::WitnessSource::Concrete { class, interface })
+            }
+            Type::Parameter { def, index, .. } => {
+                let (def, index) = (*def, *index);
+                let info = &self.functions[self.current_function?.0 as usize];
+                if info.def != Some(def) {
+                    return None;
+                }
+                let position = info.witness_params.iter().position(|parameter| {
+                    parameter.type_param == index
+                        && self.interface_reaches(parameter.interface, interface)
+                })?;
+                Some(crate::analysis::WitnessSource::Forwarded(position as u32))
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether `from` is `to` or extends it, directly or transitively.
+    fn interface_reaches(
+        &self,
+        from: crate::analysis::InterfaceId,
+        to: crate::analysis::InterfaceId,
+    ) -> bool {
+        let mut queue = vec![from];
+        let mut seen: Vec<crate::analysis::InterfaceId> = Vec::new();
+        while let Some(id) = queue.pop() {
+            if id == to {
                 return true;
             }
             if seen.contains(&id) {
@@ -574,7 +689,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "generic interfaces are not supported by this compiler yet",
                 )
-                .with_primary(argument.span, "not implemented in Noto 0.14"),
+                .with_primary(argument.span, "not implemented in Noto 0.15"),
             );
             return None;
         }
@@ -590,7 +705,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "base classes are not supported by this compiler yet",
                 )
-                .with_primary(ty.span, "not implemented in Noto 0.14")
+                .with_primary(ty.span, "not implemented in Noto 0.15")
                 .with_note(format!("`{name}` is a type, and a type cannot be implemented"))
                 .with_help("only an `interface` can appear here"),
             );
@@ -635,7 +750,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     format!("`{}` declarations are not supported by this compiler yet", decl.class_kind.as_str()),
                 )
-                .with_primary(item.span, "not implemented in Noto 0.14")
+                .with_primary(item.span, "not implemented in Noto 0.15")
                 .with_note("a value type is copied on assignment, which needs the memory model")
                 .with_help("declare it as a `class` for now: an object is a reference"),
             );
@@ -729,7 +844,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "default values for constructor parameters are not supported by this compiler yet",
                     )
-                    .with_primary(default.span, "not implemented in Noto 0.14"),
+                    .with_primary(default.span, "not implemented in Noto 0.15"),
                 );
             }
 
@@ -1045,6 +1160,7 @@ impl Checker<'_> {
             locals: Vec::new(),
             body: accessor.body.as_ref().map(|body| body.id),
             type_params: Vec::new(),
+            witness_params: Vec::new(),
             def: None,
             is_lambda: false,
             captures: Vec::new(),
@@ -1098,6 +1214,7 @@ impl Checker<'_> {
             locals: Vec::new(),
             body: None,
             type_params: Vec::new(),
+            witness_params: Vec::new(),
             def: None,
             is_lambda: false,
             captures: Vec::new(),
@@ -1146,7 +1263,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "generic methods are not supported by this compiler yet",
                 )
-                .with_primary(function.type_params[0].span, "not implemented in Noto 0.14"),
+                .with_primary(function.type_params[0].span, "not implemented in Noto 0.15"),
             );
             return;
         }
@@ -1187,6 +1304,7 @@ impl Checker<'_> {
         self.functions.push(FunctionInfo {
             name: format!("{class_name}.{short}"),
             type_params: Vec::new(),
+            witness_params: Vec::new(),
             def: None,
             module: self.current_module,
             // A method follows its class: exporting the class exports them.
@@ -1249,7 +1367,7 @@ impl Checker<'_> {
                             codes::UNSUPPORTED_CONSTRUCT,
                             "default values for case data are not supported by this compiler yet",
                         )
-                        .with_primary(default.span, "not implemented in Noto 0.14"),
+                        .with_primary(default.span, "not implemented in Noto 0.15"),
                     );
                 }
                 let ty = match &field.ty {
@@ -1495,7 +1613,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "extension functions are not supported by this compiler yet",
                 )
-                .with_primary(receiver.span, "not implemented in Noto 0.14"),
+                .with_primary(receiver.span, "not implemented in Noto 0.15"),
             );
             return;
         }
@@ -1520,6 +1638,10 @@ impl Checker<'_> {
         // the body: a `T` in a result type is the same `T` a local declares.
         let (def, type_params) = self.declare_type_params(&name, &function.type_params);
         self.record_bounds(def, &function.type_params);
+        // One hidden parameter per bound, in parameter-then-bound order. The
+        // same walk runs at every call site, which is what keeps the two ends
+        // of the signature agreeing without either being written down twice.
+        let witness_params = self.witness_params_for(def, type_params.len());
         let result = match &function.result {
             Some(ty) => self.resolve_type(ty),
             None => self.store.unit(),
@@ -1528,6 +1650,7 @@ impl Checker<'_> {
         self.functions.push(FunctionInfo {
             name: name.clone(),
             type_params: type_params.clone(),
+            witness_params,
             def,
             module: self.current_module,
             is_exported: item.modifiers.is_exported,
@@ -1608,7 +1731,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "`main` cannot be `async` in this compiler yet",
                 )
-                .with_primary(span, "not implemented in Noto 0.14"),
+                .with_primary(span, "not implemented in Noto 0.15"),
             );
         }
     }
@@ -1675,6 +1798,7 @@ impl Checker<'_> {
             locals: Vec::new(),
             body: Some(test.body.id),
             type_params: Vec::new(),
+            witness_params: Vec::new(),
             def: None,
             is_lambda: false,
             captures: Vec::new(),

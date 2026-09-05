@@ -54,6 +54,20 @@ pub enum Resolution {
     Class(ClassId),
     /// A method called through a receiver.
     Method(FunctionId),
+    /// A method reached through a bound rather than through a known type.
+    ///
+    /// Generic code is compiled once and does not know its type argument, so
+    /// the target is loaded out of the witness the caller passed and called
+    /// indirectly. Both numbers are settled here so that lowering decides
+    /// nothing: which hidden parameter holds the table, and which slot of it
+    /// holds this member.
+    InterfaceMethod {
+        /// The position of the witness among the enclosing function's hidden
+        /// parameters.
+        witness: u32,
+        /// The slot to load from that witness.
+        slot: u32,
+    },
     /// A module bound by an import, used as a namespace.
     Module(ModuleId),
     /// A declared enum, named as a type or as the namespace of its cases.
@@ -131,6 +145,13 @@ pub struct FunctionInfo {
     /// The type parameters it declares, in order; empty when it declares
     /// none.
     pub type_params: Vec<String>,
+    /// The witnesses it takes as hidden parameters, one per bound, appended
+    /// after the parameters written in source.
+    ///
+    /// This is the one place a Noto signature has an argument the source does
+    /// not show. It is empty for everything unbounded, which is what keeps an
+    /// ordinary generic function byte-for-byte what it was.
+    pub witness_params: Vec<WitnessParam>,
     /// The declaration its type parameters belong to.
     pub def: Option<DefId>,
     /// The locals it reads from an enclosing function, in the order they are
@@ -341,6 +362,71 @@ pub struct InterfaceInfo {
     pub span: Span,
 }
 
+/// The members a witness for `interface` holds, in slot order.
+///
+/// What an interface extends comes first, deepest first, then its own members.
+/// Flattening rather than nesting means one table per `(type, interface)` pair
+/// and one indirection per call: a `T: Ordered` reaching a `Comparable` method
+/// finds it in the same table, at a slot this function decides.
+///
+/// It is deliberately the only definition of that order. The table is built
+/// from it and every call site indexes with it, so the two cannot disagree
+/// about which slot holds what. It takes the interface list rather than an
+/// [`Analysis`] so that the checker, which has not produced one yet, uses this
+/// same function instead of a second copy of the rule.
+pub fn witness_members(
+    interfaces: &[InterfaceInfo],
+    interface: InterfaceId,
+) -> Vec<(InterfaceId, String)> {
+    fn walk(
+        interfaces: &[InterfaceInfo],
+        interface: InterfaceId,
+        members: &mut Vec<(InterfaceId, String)>,
+        seen: &mut Vec<InterfaceId>,
+    ) {
+        if seen.contains(&interface) {
+            return;
+        }
+        seen.push(interface);
+        let info = &interfaces[interface.0 as usize];
+        for parent in &info.extends {
+            walk(interfaces, *parent, members, seen);
+        }
+        for method in &info.methods {
+            members.push((interface, method.name.clone()));
+        }
+    }
+
+    let mut members = Vec::new();
+    walk(interfaces, interface, &mut members, &mut Vec::new());
+    members
+}
+
+/// Where the witness for one bound comes from at one call.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WitnessSource {
+    /// The concrete type is known here, so a static table serves.
+    Concrete {
+        /// The implementing class.
+        class: ClassId,
+        /// The interface it is passed as.
+        interface: InterfaceId,
+    },
+    /// The caller is itself generic and passes on the witness it received,
+    /// named by its position among the enclosing function's hidden
+    /// parameters.
+    Forwarded(u32),
+}
+
+/// One bound a function receives a witness for, as a hidden parameter.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct WitnessParam {
+    /// Which of the function's type parameters the bound is on.
+    pub type_param: u32,
+    /// The interface it must implement.
+    pub interface: InterfaceId,
+}
+
 impl InterfaceInfo {
     /// Looks a required method up by name.
     pub fn method(&self, name: &str) -> Option<&InterfaceMethod> {
@@ -434,6 +520,11 @@ pub struct Analysis {
     pub enums: Vec<EnumInfo>,
     /// Every interface, indexed by [`InterfaceId`].
     pub interfaces: Vec<InterfaceInfo>,
+    /// The witnesses each call has to pass, keyed by the call expression.
+    ///
+    /// In the order the callee declares its hidden parameters, so lowering
+    /// appends them to the argument list without deciding anything.
+    pub witness_arguments: HashMap<NodeId, Vec<WitnessSource>>,
     /// The bounds declared on each type parameter, keyed by the declaration
     /// that owns it and its position.
     ///
@@ -485,6 +576,21 @@ impl Analysis {
     /// The interfaces a type parameter is bounded by, empty when unbounded.
     pub fn bounds_on(&self, def: DefId, index: u32) -> &[InterfaceId] {
         self.type_param_bounds.get(&(def, index)).map_or(&[], Vec::as_slice)
+    }
+
+    /// The members a witness for `interface` holds, in slot order.
+    ///
+    /// What an interface extends comes first, deepest first, then its own
+    /// members. Flattening rather than nesting means one table per
+    /// `(type, interface)` pair and one indirection per call: a `T: Ordered`
+    /// reaching a `Comparable` method finds it in the same table, at a slot
+    /// this function decides.
+    ///
+    /// It is deliberately the only definition of that order. The table is
+    /// built from it and every call site indexes with it, so the two cannot
+    /// disagree about which slot holds what.
+    pub fn witness_members(&self, interface: InterfaceId) -> Vec<(InterfaceId, String)> {
+        witness_members(&self.interfaces, interface)
     }
 
     /// The enum a type names, if it names one.

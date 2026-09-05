@@ -1,9 +1,9 @@
-# The Noto language specification — 0.14
+# The Noto language specification — 0.15
 
 The language as implemented, section by section. Everything marked **not
 implemented** parses (the parser covers the full grammar) but is rejected
 during semantic analysis or lowering with `NOTO0500 … not implemented in
-Noto 0.14`. Nothing is silently accepted and miscompiled.
+Noto 0.15`. Nothing is silently accepted and miscompiled.
 
 This document describes behaviour; syntax details that deserve their own
 rationale live in [design/](design/).
@@ -241,18 +241,41 @@ firstOf([Circle(1)])                      // NOTO0413: Circle is not Comparable
 A bound is satisfied through what an interface extends, so a `T: Ordered` may
 be passed where a `U: Comparable` is wanted. `<T: A + B>` requires both.
 
-A bound **constrains** which types may be used; it does not yet let the body
-call through it. Inside `firstOf`, `xs[0].compareTo(..)` is still an unknown
-member, because reaching an interface member on a `T` means dispatching
-through a witness — a pointer to the concrete type's implementations, passed
-alongside the arguments — and that is not implemented. The diagnostic says so
-rather than pretending the bound was not read.
+A bounded function may call the members its bound promised:
 
-The primitive types satisfy no bound yet: `firstOf([1, 2, 3])` is an error.
+```noto
+fn largest<T: Comparable>(xs: [T]): T {
+    var best = xs[0]
+    for x in xs {
+        if best.compareTo(x) < 0 { best = x }
+    }
+    return best
+}
+```
+
+`largest` is compiled **once**, not once per type. It reaches `compareTo`
+through a **witness**: a static table of the concrete type's implementations,
+passed as a hidden argument after everything written in the signature. That is
+the only argument in Noto the source does not show, and the only thing generics
+do that is not free — one pointer per bound, paid by the code that uses one. An
+unbounded generic passes nothing and is unchanged.
+
+A generic function calling another one passes on the witness it was given: it
+does not know its own type argument either.
+
+Inside the body, `Self` is the type parameter. `other: Self` on `Comparable`
+means another `T`, so `xs[0].compareTo(1)` does not compile even when `T` turns
+out to be `Int`. A member the bound does not declare is an unknown member, the
+same as on an unbounded `T`.
+
+The primitive types satisfy no bound yet: `largest([1, 2, 3])` is an error.
 `Int` cannot be opened to add a conformance, so this waits on a fixed,
 compiler-known table.
 
-Not implemented: witnesses and member calls through a bound; generic
+Not implemented: bounds on a **class** that dispatch — `class Holder<T: Sized>`
+is checked, but a method of it cannot read `item.size`, because a class carries
+its witness in a field and that is not built; property requirements through a
+bound, for the same reason a field has no accessor to point at; generic
 interfaces (`interface Into<T>`); default method bodies; built-in conformances
 for the primitive types; interfaces on an enum. The reasoning and the plan are
 in [RFC 0003](rfcs/0003-interfaces-and-bounds.md).

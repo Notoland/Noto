@@ -783,16 +783,130 @@ fn a_generic_class_accepts_a_conforming_argument() {
 }
 
 #[test]
-fn calling_a_bound_member_is_still_rejected_and_says_why() {
-    // Bounds constrain; they do not yet dispatch. The error has to say that,
-    // or it reads as though the bound had not been noticed.
-    let (_, messages) = check(&format!(
-        "{COMPARABLE}fn largest<T: Comparable>(xs: [T]): T {{\n    return xs[0].compareTo(xs[0])\n}}\n\
-         fn main() {{}}\n"
-    ));
+fn a_bound_member_can_be_called_on_a_type_parameter() {
+    let source = format!(
+        "{COMPARABLE}fn largest<T: Comparable>(xs: [T]): T {{\n\
+         \x20   var best = xs[0]\n\
+         \x20   for x in xs {{\n        if best.compareTo(x) < 0 {{ best = x }}\n    }}\n\
+         \x20   return best\n}}\n\
+         fn main() {{\n    println(largest([Version(1), Version(2)]).major)\n}}\n"
+    );
+    let analysis = check_ok(&source);
+    let largest = analysis.function(analysis.function_named("largest").unwrap());
+    // One hidden parameter, for the one bound.
+    assert_eq!(largest.witness_params.len(), 1);
+    assert_eq!(largest.witness_params[0].type_param, 0);
+}
+
+#[test]
+fn a_bound_member_keeps_its_declared_result_type() {
+    // `compareTo` produces an Int whatever `T` is, so returning it where a
+    // `T` is promised has to fail.
+    check_error(
+        &format!(
+            "{COMPARABLE}fn largest<T: Comparable>(xs: [T]): T {{\n    return xs[0].compareTo(xs[0])\n}}\n\
+             fn main() {{}}\n"
+        ),
+        "expected `T`",
+    );
+}
+
+#[test]
+fn self_in_a_bound_member_means_the_type_parameter() {
+    // `other: Self` inside `Comparable` is another `T` here, not any other
+    // implementer and not a concrete type.
+    check_error(
+        &format!(
+            "{COMPARABLE}fn firstOf<T: Comparable>(xs: [T]): T {{\n    val n = xs[0].compareTo(1)\n    return xs[0]\n}}\n\
+             fn main() {{}}\n"
+        ),
+        "expected `T`",
+    );
+}
+
+#[test]
+fn a_member_the_bound_does_not_declare_is_still_unknown() {
+    check_error(
+        &format!(
+            "{COMPARABLE}fn firstOf<T: Comparable>(xs: [T]): T {{\n    val n = xs[0].hash()\n    return xs[0]\n}}\n\
+             fn main() {{}}\n"
+        ),
+        "has no method `hash`",
+    );
+}
+
+#[test]
+fn a_call_records_where_each_witness_comes_from() {
+    let source = format!(
+        "{COMPARABLE}fn firstOf<T: Comparable>(xs: [T]): T = xs[0]\n\
+         fn main() {{\n    println(firstOf([Version(1)]).major)\n}}\n"
+    );
+    let analysis = check_ok(&source);
+    let sources: Vec<_> = analysis.witness_arguments.values().collect();
+    assert_eq!(sources.len(), 1, "one bounded call, one entry");
     assert!(
-        messages.iter().any(|m| m.contains("has no method `compareTo`")),
-        "{messages:?}"
+        matches!(sources[0][..], [WitnessSource::Concrete { .. }]),
+        "a known type gets a static table, not a forwarded parameter"
+    );
+}
+
+#[test]
+fn a_generic_caller_forwards_the_witness_it_was_given() {
+    let source = "interface Comparable {\n    fn compareTo(other: Self): Int\n}\n\
+         fn biggest<T: Comparable>(a: T, b: T): T = if a.compareTo(b) < 0 { b } else { a }\n\
+         fn pick<T: Comparable>(a: T, b: T): T = biggest(a, b)\n\
+         fn main() {}\n";
+    let analysis = check_ok(source);
+    let forwarded = analysis
+        .witness_arguments
+        .values()
+        .any(|sources| matches!(sources[..], [WitnessSource::Forwarded(0)]));
+    assert!(forwarded, "a generic caller has no concrete type to build a table from");
+}
+
+#[test]
+fn a_witness_flattens_what_the_interface_extends() {
+    let source = "interface Comparable {\n    fn compareTo(other: Self): Int\n}\n\
+         interface Ordered : Comparable {\n    fn rank(): Int\n}\n\
+         fn main() {}\n";
+    let analysis = check_ok(source);
+    let ordered = analysis
+        .interfaces
+        .iter()
+        .position(|interface| interface.name == "Ordered")
+        .map(|index| InterfaceId(index as u32))
+        .unwrap();
+
+    let members: Vec<String> = analysis
+        .witness_members(ordered)
+        .into_iter()
+        .map(|(_, name)| name)
+        .collect();
+    // What it extends comes first, so a `Comparable` slot is at the same
+    // index whichever bound reached it.
+    assert_eq!(members, vec!["compareTo".to_string(), "rank".to_string()]);
+}
+
+#[test]
+fn an_unbounded_generic_takes_no_hidden_parameter() {
+    let analysis = check_ok(
+        "fn first<T>(xs: [T]): T = xs[0]\nfn main() {\n    println(first([1, 2]))\n}\n",
+    );
+    let first = analysis.function(analysis.function_named("first").unwrap());
+    assert!(first.witness_params.is_empty(), "an unbounded generic pays nothing");
+    assert!(analysis.witness_arguments.is_empty());
+}
+
+#[test]
+fn a_bounded_class_method_cannot_reach_its_bound_yet() {
+    // A class carries its witness in a field, and that is not built. Until it
+    // is, this has to report rather than compile to a load from nowhere.
+    check_error(
+        "interface Sized {\n    val size: Int\n}\n\
+         interface Weighed {\n    fn weigh(): Int\n}\n\
+         class Holder<T: Weighed>(val item: T) {\n    fn total(): Int = item.weigh()\n}\n\
+         fn main() {}\n",
+        "has no method `weigh`",
     );
 }
 

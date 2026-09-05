@@ -133,9 +133,13 @@ impl Usage<'_> {
                 let info = self.analysis.enum_at(id);
                 (info.module, info.name.clone())
             }
+            // A member reached through a bound names no declaration to
+            // import: the import that matters is the interface's, and that is
+            // recorded where the bound was written.
             Resolution::Local(_)
             | Resolution::Builtin(_)
             | Resolution::ListMethod(_)
+            | Resolution::InterfaceMethod { .. }
             | Resolution::Error => return,
         };
         // A method is `Class.method`; what an import binds is the class.

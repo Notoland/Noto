@@ -1,7 +1,8 @@
 # RFC 0003: Interfaces and bounds
 
-- **Status:** Partially implemented — declarations and conformance are in;
-  bounds and witnesses are not. See [Implementation status](#implementation-status).
+- **Status:** Implemented for functions — declarations, conformance, bounds
+  and witness dispatch are in. Classes, primitives and defaults are not. See
+  [Implementation status](#implementation-status).
 - **Discussion:** (open a PR to discuss)
 
 ## Summary
@@ -426,8 +427,8 @@ declaration compiles to nothing and an implementing class is laid out exactly
 as it was. A bound that only constrains adds nothing to a signature. So
 everything above runs: `examples/interfaces.noto` builds to a native binary.
 
-The machinery a witness needs exists in the IR and the backend, but nothing
-produces one yet:
+The witness, exactly as proposed — a static table in the read-only image, one
+per `(type, interface)` pair actually used, passed as a hidden argument:
 
 - `Witness` and `WitnessId` in `noto-ir`, a pool on `Program` interned by the
   `(type, interface)` pair, and `InstKind::WitnessAddr` to materialise one
@@ -436,18 +437,39 @@ produces one yet:
   their entries are the addresses of functions that did not exist yet. This is
   the first thing in the compiler that patches *data* rather than code — every
   relocation until now was a RIP-relative displacement inside `.text`
+- one hidden parameter per bound, appended after everything written in source,
+  so a parameter's position is what the reader of the signature thinks it is
+- a generic caller passes on the witness it received instead of building one,
+  because it does not know its own type argument either
+
+One departure from the proposal above: **witnesses are flattened, not nested.**
+The text suggests an `Ordered` witness embedding or pointing at a `Comparable`
+one. Instead a table holds what the interface extends first, deepest first,
+then its own members, so a `T: Ordered` reaching a `Comparable` method finds it
+in the same table at one indirection. The cost is a duplicated entry when a
+type is passed under both bounds; the saving is that there is no second kind of
+witness and no chasing. One function decides that order, and both the table
+builder and every call site index with it, so they cannot disagree.
 
 Not yet landed:
 
-- **member resolution through a bound, and the lowering that passes a
-  witness.** These are one step:
-  `best.compareTo(x)` inside `fn largest<T: Comparable>` is still `NOTO0404`,
-  because making it type check without lowering it would produce a program
-  that passes `noto check` and cannot be built. The diagnostic names the bound
-  and says the witness is what is missing
-- **default method bodies.** Rejected with `NOTO0500` for the same reason —
-  reaching one means dispatching through a witness. This is why `has_default`
-  is not yet recorded on an interface method
+- **built-in conformances for the primitives** (`Int: Comparable`, ...).
+  Without them a bound is useless on the types most programs hold —
+  `largest([1, 2, 3])` is `NOTO0413` — and the user cannot fix it, because
+  `class Int` cannot be opened. The diagnostic says so rather than suggesting
+  it. What has to be designed first is where `Int.compareTo` lives: a witness
+  slot needs a real function address, and nothing has lowered one
+- **bounds on a class that dispatch.** A class would carry its witness in a
+  hidden field written at construction, rather than receiving it as an
+  argument. Checked but not reachable: `item.weigh()` inside a
+  `class Holder<T: Weighed>` is still an unknown member
+- **property requirements through a bound.** The witness holds method pointers
+  only. A class satisfying `val size: Int` with a plain field has no accessor
+  function to point at, so one has to be synthesised
+- **default method bodies.** Rejected with `NOTO0500`. They are reachable now
+  that a witness exists — a default is a function like any other, and the slot
+  points at it when the implementer does not override — but nothing emits one
+  yet, which is why `has_default` is still not recorded
 - **built-in conformances for the primitives** (`Int: Comparable`, ...).
   Without them a bound is useless on the types most programs hold:
   `firstOf([1, 2, 3])` is `NOTO0413` today, and the diagnostic says why rather

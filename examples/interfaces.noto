@@ -8,11 +8,14 @@
 // Comparable?" is answered by reading Version's first line. The reasoning, and
 // what is still missing, is in docs/rfcs/0003-interfaces-and-bounds.md.
 //
-// A bound — `<T: Comparable>` — is that promise attached to a type parameter.
-// It is checked at every call, so a type that does not implement the
-// interface cannot reach the function at all. What a bound does NOT do yet is
-// let the body call through it: that needs a witness, and until it exists a
-// bounded T is still a value you can only move around.
+// A bound — `<T: Comparable>` — is that promise attached to a type parameter,
+// and it is what lets generic code do more with a T than move it around.
+//
+// `largest` below is compiled ONCE, not once per type. It reaches compareTo
+// through a witness: a static table of the concrete type's implementations,
+// passed as a hidden argument. That is the only argument in the language the
+// source does not show, and the only thing generics do that is not free —
+// one pointer per bound, paid by code that uses one.
 
 /// Two values of the same type, ordered.
 ///
@@ -45,11 +48,27 @@ export class Buffer(val size: Int): Comparable, Sized {
 /// with NOTO0413, naming what it would have to implement.
 export fn firstOf<T: Comparable>(xs: [T]): T = xs[0]
 
+/// The payoff: one compiled function, ordering values of any type that
+/// promised it can be ordered.
+export fn largest<T: Comparable>(xs: [T]): T {
+    var best = xs[0]
+    for x in xs {
+        if best.compareTo(x) < 0 { best = x }
+    }
+    return best
+}
+
+/// A bounded function may pass its own T on: it hands over the witness it was
+/// given rather than building one, because it does not know the type either.
+export fn largestOfThree<T: Comparable>(a: T, b: T, c: T): T = largest([a, b, c])
+
 /// A bound flows through a generic class the same way: `Holder(Circle(1))`
 /// is rejected at the construction.
 ///
-/// It cannot read `item.size` yet — that is the witness, still missing — so
-/// the bound here documents and enforces what may go in, and no more.
+/// A class cannot yet reach its bound the way a function can. A function is
+/// handed its witness as an argument; a class would have to store one in a
+/// hidden field, written at construction, and that is not built — so
+/// `item.size` inside a method here is still an unknown member.
 export class Holder<T: Sized>(val item: T)
 
 test "an implementer's method is an ordinary method" {
@@ -78,6 +97,16 @@ test "a bound lets only an implementer through" {
     assert(firstOf([Buffer(8), Buffer(16)]).size == 8)
 
     // firstOf([Circle(1)]) would be NOTO0413: Circle is not Comparable.
+}
+
+test "a bound reaches the members it promised" {
+    assert(largest([Version(1, 4), Version(2, 0), Version(0, 9)]).major == 2)
+    // The same compiled `largest`, a different type, a different table.
+    assert(largest([Buffer(8), Buffer(64), Buffer(16)]).size == 64)
+}
+
+test "a witness can be passed on rather than built" {
+    assert(largestOfThree(Version(1, 0), Version(3, 0), Version(2, 0)).major == 3)
 }
 
 test "a bound on a class is checked where it is constructed" {

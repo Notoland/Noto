@@ -309,6 +309,9 @@ pub(crate) struct Builder<'a> {
     pub(crate) loops: Vec<LoopTargets>,
     /// Which analysed function is being built, needed to read its captures.
     semantic: FunctionId,
+    /// The slot each hidden witness parameter lives in, in the order the
+    /// signature declares them.
+    witness_slots: Vec<SlotId>,
 }
 
 /// Where `break` and `continue` go inside one loop.
@@ -339,6 +342,7 @@ impl<'a> Builder<'a> {
             slots: HashMap::new(),
             loops: Vec::new(),
             semantic,
+            witness_slots: Vec::new(),
         }
     }
 
@@ -368,6 +372,21 @@ impl<'a> Builder<'a> {
             if local.is_parameter {
                 parameters.push(slot);
             }
+        }
+
+        // The witnesses come after everything written in source, so a
+        // parameter's position is what the reader of the signature thinks it
+        // is and only the bounded case grows.
+        for (position, parameter) in info.witness_params.iter().enumerate() {
+            let interface = self.analysis.interface(parameter.interface).name.clone();
+            let slot = SlotId(self.function().slots.len() as u32);
+            self.function_mut().slots.push(Slot {
+                name: format!("$witness{position}:{interface}"),
+                ty: IrType::Ptr,
+                is_parameter: true,
+            });
+            self.witness_slots.push(slot);
+            parameters.push(slot);
         }
         self.function_mut().parameters = parameters;
 
@@ -562,6 +581,11 @@ impl<'a> Builder<'a> {
         self.function_ids.get(&function).copied()
     }
 
+    /// The slot holding one of this function's hidden witness parameters.
+    pub(crate) fn witness_slot(&self, position: u32) -> Option<SlotId> {
+        self.witness_slots.get(position as usize).copied()
+    }
+
     /// The machine type of an AST node, from the type checker's records.
     pub(crate) fn type_of(&self, id: NodeId) -> IrType {
         lower_type(&self.analysis.store, self.analysis.type_of(id))
@@ -574,7 +598,7 @@ impl<'a> Builder<'a> {
                 codes::UNSUPPORTED_CONSTRUCT,
                 format!("{what} cannot be compiled to native code yet"),
             )
-            .with_primary(span, "not implemented in Noto 0.14"),
+            .with_primary(span, "not implemented in Noto 0.15"),
         );
         Operand::Const(Const::Unit)
     }
