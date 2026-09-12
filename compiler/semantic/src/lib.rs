@@ -23,10 +23,10 @@ mod imports;
 mod scope;
 
 pub use analysis::{
-    Analysis, ClassId, ClassInfo, ConstId, ConstInfo, ConstValue, EnumCaseInfo, EnumId, EnumInfo,
-    FieldInfo, FunctionId, FunctionInfo, InterfaceId, InterfaceInfo, InterfaceMethod,
-    InterfaceProperty, LocalId, LocalInfo, MethodInfo, ModuleId, PropertyInfo, Resolution, TestInfo,
-    WitnessParam, WitnessSource,
+    Analysis, BuiltinType, ClassId, ClassInfo, ConstId, ConstInfo, ConstValue, EnumCaseInfo,
+    EnumId, EnumInfo, FieldInfo, FunctionId, FunctionInfo, InterfaceId, InterfaceInfo,
+    InterfaceMethod, InterfaceProperty, LocalId, LocalInfo, MethodInfo, ModuleId, PropertyInfo,
+    Resolution, TestInfo, WitnessParam, WitnessSource,
 };
 
 /// The name of the type an interface's members stand for.
@@ -182,6 +182,11 @@ struct Checker<'sink> {
     classes: Vec<ClassInfo>,
     enums: Vec<EnumInfo>,
     interfaces: Vec<InterfaceInfo>,
+    /// `Comparable`, resolvable in every module without a declaration or an
+    /// import — see [`Checker::builtin_interface`].
+    comparable_interface: InterfaceId,
+    /// `Hashable`, resolvable the same way.
+    hashable_interface: InterfaceId,
     /// The bounds on every type parameter declared anywhere in the program.
     type_param_bounds: HashMap<(noto_types::DefId, u32), Vec<InterfaceId>>,
     /// The witnesses each call passes, keyed by the call expression.
@@ -228,8 +233,30 @@ struct Checker<'sink> {
 
 impl<'sink> Checker<'sink> {
     fn new(sink: &'sink mut DiagnosticSink) -> Self {
-        let store = TypeStore::new();
+        let mut store = TypeStore::new();
         let expected_result = store.unit();
+
+        // `Comparable` and `Hashable` are compiler-known: nothing can open
+        // `class Int` to declare a conformance, so RFC 0003's fixed table
+        // needs these two to exist before any module is read, and to resolve
+        // by name in every module without an import. There is no source for
+        // either, so they are built directly rather than through
+        // `declare_interface`.
+        let int_ty = store.int();
+        let mut interfaces = Vec::new();
+        let comparable_interface = declare_builtin_interface(
+            &mut store,
+            &mut interfaces,
+            "Comparable",
+            &[("compareTo", 1, int_ty)],
+        );
+        let hashable_interface = declare_builtin_interface(
+            &mut store,
+            &mut interfaces,
+            "Hashable",
+            &[("hash", 0, int_ty)],
+        );
+
         Checker {
             sink,
             store,
@@ -241,7 +268,9 @@ impl<'sink> Checker<'sink> {
             constants: Vec::new(),
             classes: Vec::new(),
             enums: Vec::new(),
-            interfaces: Vec::new(),
+            interfaces,
+            comparable_interface,
+            hashable_interface,
             type_param_bounds: HashMap::new(),
             witness_arguments: HashMap::new(),
             tests: Vec::new(),
@@ -308,17 +337,30 @@ impl<'sink> Checker<'sink> {
         self.module_interfaces[self.current_module.0 as usize].get(name).copied()
     }
 
-    /// Resolves an interface name: this module's own, then what it imports.
+    /// Resolves an interface name: this module's own, then what it imports,
+    /// then the two the compiler knows by name.
     fn lookup_interface(&self, name: &str) -> Option<InterfaceId> {
         if let Some(id) = self.own_interface(name) {
             return Some(id);
         }
-        match name.split_once('.') {
+        let imported = match name.split_once('.') {
             Some((namespace, rest)) => {
-                let target = self.namespace(namespace)?;
-                self.export_interface(target, rest)
+                self.namespace(namespace).and_then(|target| self.export_interface(target, rest))
             }
             None => self.selective(name).and_then(|target| self.export_interface(target, name)),
+        };
+        imported.or_else(|| self.builtin_interface(name))
+    }
+
+    /// `Comparable` and `Hashable`, always in scope under a bare name.
+    ///
+    /// A module's own declaration is tried first by [`Self::lookup_interface`]
+    /// and shadows these, the same way a local name shadows an import.
+    fn builtin_interface(&self, name: &str) -> Option<InterfaceId> {
+        match name {
+            "Comparable" => Some(self.comparable_interface),
+            "Hashable" => Some(self.hashable_interface),
+            _ => None,
         }
     }
 
@@ -499,6 +541,50 @@ impl<'sink> Checker<'sink> {
         self.scopes.declare(name, Resolution::Local(id));
         id
     }
+}
+
+/// Registers one compiler-known interface directly, bypassing the AST the
+/// way every other declaration in this file has one to go through.
+///
+/// There is no source for `Comparable` or `Hashable`: RFC 0003's table is the
+/// declaration. Each `(name, self_typed_params, result)` entry becomes one
+/// abstract method whose parameters are `self_typed_params` copies of `Self`
+/// — which is exactly `compareTo(other: Self)` and `hash()`, the only two
+/// shapes this needs.
+fn declare_builtin_interface(
+    store: &mut TypeStore,
+    interfaces: &mut Vec<InterfaceInfo>,
+    name: &str,
+    methods: &[(&str, usize, TypeId)],
+) -> InterfaceId {
+    let id = InterfaceId(interfaces.len() as u32);
+    let def = store.declare(name, noto_types::DefKind::Interface);
+    let self_ty = store.intern(noto_types::Type::Parameter {
+        def,
+        index: 0,
+        name: SELF_TYPE_NAME.to_string(),
+    });
+    let methods = methods
+        .iter()
+        .map(|(name, self_typed_params, result)| InterfaceMethod {
+            name: name.to_string(),
+            parameters: vec![self_ty; *self_typed_params],
+            result: *result,
+            span: Span::dummy(),
+        })
+        .collect();
+    interfaces.push(InterfaceInfo {
+        name: name.to_string(),
+        module: ModuleId::ROOT,
+        is_exported: true,
+        extends: Vec::new(),
+        methods,
+        properties: Vec::new(),
+        def,
+        self_ty,
+        span: Span::dummy(),
+    });
+    id
 }
 
 #[cfg(test)]

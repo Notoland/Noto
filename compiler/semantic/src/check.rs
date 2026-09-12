@@ -326,7 +326,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "declarations inside a function body are not supported yet",
                     )
-                    .with_primary(stmt.span, "not implemented in Noto 0.15")
+                    .with_primary(stmt.span, "not implemented in Noto 0.16")
                     .with_help("move the declaration to the top level of the file"),
                 );
                 self.store.unit()
@@ -410,7 +410,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this pattern is not supported in a binding yet",
                     )
-                    .with_primary(pattern.span, "not implemented in Noto 0.15")
+                    .with_primary(pattern.span, "not implemented in Noto 0.16")
                     .with_help("bind a name, a tuple of names, or `_`"),
                 );
             }
@@ -437,7 +437,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         format!("cannot iterate over a `{rendered}` yet"),
                     )
-                    .with_primary(iterable.span, "not iterable in Noto 0.15")
+                    .with_primary(iterable.span, "not iterable in Noto 0.16")
                     .with_help("iterate over a range, as in `for i in 0..10`"),
                 );
                 self.store.error()
@@ -508,7 +508,7 @@ impl Checker<'_> {
                     let ty = self.check_expr_expecting(bound, int);
                     self.expect_assignable(ty, int, bound.span, None);
                 }
-                // Ranges exist only inside `for` and `when` in Noto 0.15; there
+                // Ranges exist only inside `for` and `when` in Noto 0.16; there
                 // is no first-class `Range` type to give them yet.
                 self.store.unit()
             }
@@ -529,7 +529,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this expression is not supported by this compiler yet",
                     )
-                    .with_primary(expr.span, "not implemented in Noto 0.15"),
+                    .with_primary(expr.span, "not implemented in Noto 0.16"),
                 );
                 self.store.error()
             }
@@ -633,7 +633,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "an async lambda is not supported by this compiler yet",
                 )
-                .with_primary(expr.span, "not implemented in Noto 0.15"),
+                .with_primary(expr.span, "not implemented in Noto 0.16"),
             );
             return self.store.error();
         }
@@ -1272,7 +1272,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "`in` is not supported outside a `when` arm yet",
                     )
-                    .with_primary(span, "not implemented in Noto 0.15"),
+                    .with_primary(span, "not implemented in Noto 0.16"),
                 );
                 bool_ty
             }
@@ -1775,7 +1775,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "this pattern is not supported by this compiler yet",
                     )
-                    .with_primary(pattern.span, "not implemented in Noto 0.15"),
+                    .with_primary(pattern.span, "not implemented in Noto 0.16"),
                 );
             }
         }
@@ -1940,7 +1940,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "explicit type arguments are not supported by this compiler yet",
                 )
-                .with_primary(expr.span, "not implemented in Noto 0.15"),
+                .with_primary(expr.span, "not implemented in Noto 0.16"),
             );
         }
 
@@ -1951,7 +1951,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "named arguments are not supported by this compiler yet",
                     )
-                    .with_primary(name.span, "not implemented in Noto 0.15")
+                    .with_primary(name.span, "not implemented in Noto 0.16")
                     .with_help("pass the arguments positionally"),
                 );
             }
@@ -2031,7 +2031,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "safe calls are not supported by this compiler yet",
                     )
-                    .with_primary(expr.span, "not implemented in Noto 0.15"),
+                    .with_primary(expr.span, "not implemented in Noto 0.16"),
                 );
                 return self.store.error();
             }

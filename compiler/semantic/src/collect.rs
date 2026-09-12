@@ -43,7 +43,7 @@ impl Checker<'_> {
                 codes::UNSUPPORTED_CONSTRUCT,
                 format!("{what} are not supported by this compiler yet"),
             )
-            .with_primary(span, "not implemented in Noto 0.15")
+            .with_primary(span, "not implemented in Noto 0.16")
         };
 
         if let Some(param) = decl.type_params.first() {
@@ -150,7 +150,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "generic interfaces are not supported by this compiler yet",
                 )
-                .with_primary(param.span, "not implemented in Noto 0.15")
+                .with_primary(param.span, "not implemented in Noto 0.16")
                 .with_note(
                     "a type could implement `Into<Int>` and `Into<String>` both, and \
                      which one a bound picks is left open by RFC 0003",
@@ -264,7 +264,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "default accessors on an interface property are not supported by this compiler yet",
                     )
-                    .with_primary(property.span, "not implemented in Noto 0.15")
+                    .with_primary(property.span, "not implemented in Noto 0.16")
                     .with_note("reaching one means dispatching through a witness, which arrives with bounds"),
                 );
                 continue;
@@ -327,7 +327,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "generic methods are not supported by this compiler yet",
                     )
-                    .with_primary(param.span, "not implemented in Noto 0.15"),
+                    .with_primary(param.span, "not implemented in Noto 0.16"),
                 );
                 continue;
             }
@@ -337,7 +337,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "default method bodies are not supported by this compiler yet",
                     )
-                    .with_primary(body.span, "not implemented in Noto 0.15")
+                    .with_primary(body.span, "not implemented in Noto 0.16")
                     .with_note(
                         "a default is reached through a witness, which arrives with bounds — RFC 0003",
                     )
@@ -453,36 +453,73 @@ impl Checker<'_> {
             .collect()
     }
 
+    /// The fixed conformances RFC 0003 gives the primitive types and
+    /// `String`, because nothing can open `class Int` to declare them:
+    ///
+    /// | Type | Implements |
+    /// |---|---|
+    /// | `Int`, the sized ints, `Byte`, `Char` | `Comparable`, `Hashable` |
+    /// | `String` | `Comparable`, `Hashable` |
+    /// | `Bool` | `Hashable` |
+    ///
+    /// `Float32`/`Float64` implement neither: ordering and hashing a float is
+    /// a real design question (NaN, `-0.0`) that this table does not answer
+    /// by omission.
+    pub(crate) fn builtin_conformances(
+        &self,
+        ty: crate::analysis::BuiltinType,
+    ) -> Vec<crate::analysis::InterfaceId> {
+        use crate::analysis::BuiltinType;
+        use noto_types::Primitive::{Bool, Float32, Float64};
+
+        let is_float = matches!(ty, BuiltinType::Primitive(Float32 | Float64));
+        let is_bool = matches!(ty, BuiltinType::Primitive(Bool));
+
+        let mut out = Vec::new();
+        if !is_float && !is_bool {
+            out.push(self.comparable_interface);
+        }
+        if !is_float {
+            out.push(self.hashable_interface);
+        }
+        out
+    }
+
     /// Whether `ty` satisfies `interface`.
     ///
     /// Conformance is nominal, so this is a lookup rather than a comparison of
     /// members. A type parameter satisfies a bound its own declaration
     /// demanded, which is what lets a bounded function pass its `T` on to
     /// another one. Both walk `extends`, so a `T: Ordered` satisfies
-    /// `Comparable`.
+    /// `Comparable`. A primitive or `String` satisfies whatever
+    /// [`Self::builtin_conformances`] says it does.
     pub(crate) fn satisfies(
         &self,
         ty: TypeId,
         interface: crate::analysis::InterfaceId,
     ) -> bool {
-        let declared: &[crate::analysis::InterfaceId] = match self.store.get(ty) {
+        let declared: Vec<crate::analysis::InterfaceId> = match self.store.get(ty) {
             // One mistake produces one diagnostic: an error type satisfies
             // anything rather than reporting a second time.
             Type::Error => return true,
             Type::Named { .. } => match self.class_of(ty) {
-                Some((_, class)) => &class.interfaces,
+                Some((_, class)) => class.interfaces.clone(),
                 None => return false,
             },
             Type::Parameter { def, index, .. } => {
                 match self.type_param_bounds.get(&(*def, *index)) {
-                    Some(bounds) => bounds,
+                    Some(bounds) => bounds.clone(),
                     None => return false,
                 }
             }
+            Type::Primitive(primitive) => {
+                self.builtin_conformances(crate::analysis::BuiltinType::Primitive(*primitive))
+            }
+            Type::String => self.builtin_conformances(crate::analysis::BuiltinType::String),
             _ => return false,
         };
 
-        let mut queue: Vec<crate::analysis::InterfaceId> = declared.to_vec();
+        let mut queue: Vec<crate::analysis::InterfaceId> = declared;
         let mut seen: Vec<crate::analysis::InterfaceId> = Vec::new();
         while let Some(id) = queue.pop() {
             if id == interface {
@@ -550,6 +587,18 @@ impl Checker<'_> {
                 let (class, _) = self.class_of(ty)?;
                 Some(crate::analysis::WitnessSource::Concrete { class, interface })
             }
+            // The caller already checked `satisfies`, so this is only ever
+            // reached for a primitive or `String` that is in the table —
+            // lowering builds the witness the compiler, not the checker,
+            // knows how to.
+            Type::Primitive(primitive) => Some(crate::analysis::WitnessSource::Builtin {
+                ty: crate::analysis::BuiltinType::Primitive(*primitive),
+                interface,
+            }),
+            Type::String => Some(crate::analysis::WitnessSource::Builtin {
+                ty: crate::analysis::BuiltinType::String,
+                interface,
+            }),
             Type::Parameter { def, index, .. } => {
                 let (def, index) = (*def, *index);
                 let info = &self.functions[self.current_function?.0 as usize];
@@ -659,13 +708,19 @@ impl Checker<'_> {
             diagnostic
                 .with_note("an enum cannot implement an interface yet")
         } else {
-            diagnostic
-                .with_note(format!(
-                    "`{rendered}` is built in, and cannot be opened to add a conformance"
-                ))
-                .with_help(
+            let diagnostic = diagnostic.with_note(format!(
+                "`{rendered}` is built in, and cannot be opened to add a conformance"
+            ));
+            if matches!(self.store.get(argument), Type::Primitive(_) | Type::String) {
+                diagnostic.with_help(
+                    "only `Comparable` and `Hashable` are built in, for the types RFC 0003 \
+                     lists — see its table for exactly which",
+                )
+            } else {
+                diagnostic.with_help(
                     "the conformances of the built-in types are not implemented yet — RFC 0003",
                 )
+            }
         };
         self.sink.emit(diagnostic);
     }
@@ -689,7 +744,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "generic interfaces are not supported by this compiler yet",
                 )
-                .with_primary(argument.span, "not implemented in Noto 0.15"),
+                .with_primary(argument.span, "not implemented in Noto 0.16"),
             );
             return None;
         }
@@ -705,7 +760,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "base classes are not supported by this compiler yet",
                 )
-                .with_primary(ty.span, "not implemented in Noto 0.15")
+                .with_primary(ty.span, "not implemented in Noto 0.16")
                 .with_note(format!("`{name}` is a type, and a type cannot be implemented"))
                 .with_help("only an `interface` can appear here"),
             );
@@ -750,7 +805,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     format!("`{}` declarations are not supported by this compiler yet", decl.class_kind.as_str()),
                 )
-                .with_primary(item.span, "not implemented in Noto 0.15")
+                .with_primary(item.span, "not implemented in Noto 0.16")
                 .with_note("a value type is copied on assignment, which needs the memory model")
                 .with_help("declare it as a `class` for now: an object is a reference"),
             );
@@ -844,7 +899,7 @@ impl Checker<'_> {
                         codes::UNSUPPORTED_CONSTRUCT,
                         "default values for constructor parameters are not supported by this compiler yet",
                     )
-                    .with_primary(default.span, "not implemented in Noto 0.15"),
+                    .with_primary(default.span, "not implemented in Noto 0.16"),
                 );
             }
 
@@ -1263,7 +1318,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "generic methods are not supported by this compiler yet",
                 )
-                .with_primary(function.type_params[0].span, "not implemented in Noto 0.15"),
+                .with_primary(function.type_params[0].span, "not implemented in Noto 0.16"),
             );
             return;
         }
@@ -1367,7 +1422,7 @@ impl Checker<'_> {
                             codes::UNSUPPORTED_CONSTRUCT,
                             "default values for case data are not supported by this compiler yet",
                         )
-                        .with_primary(default.span, "not implemented in Noto 0.15"),
+                        .with_primary(default.span, "not implemented in Noto 0.16"),
                     );
                 }
                 let ty = match &field.ty {
@@ -1613,7 +1668,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "extension functions are not supported by this compiler yet",
                 )
-                .with_primary(receiver.span, "not implemented in Noto 0.15"),
+                .with_primary(receiver.span, "not implemented in Noto 0.16"),
             );
             return;
         }
@@ -1731,7 +1786,7 @@ impl Checker<'_> {
                     codes::UNSUPPORTED_CONSTRUCT,
                     "`main` cannot be `async` in this compiler yet",
                 )
-                .with_primary(span, "not implemented in Noto 0.15"),
+                .with_primary(span, "not implemented in Noto 0.16"),
             );
         }
     }

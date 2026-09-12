@@ -1,9 +1,9 @@
-# The Noto language specification — 0.15
+# The Noto language specification — 0.16
 
 The language as implemented, section by section. Everything marked **not
 implemented** parses (the parser covers the full grammar) but is rejected
 during semantic analysis or lowering with `NOTO0500 … not implemented in
-Noto 0.15`. Nothing is silently accepted and miscompiled.
+Noto 0.16`. Nothing is silently accepted and miscompiled.
 
 This document describes behaviour; syntax details that deserve their own
 rationale live in [design/](design/).

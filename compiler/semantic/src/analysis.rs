@@ -3,7 +3,7 @@
 use crate::builtins::Builtin;
 use noto_ast::NodeId;
 use noto_span::Span;
-use noto_types::{DefId, TypeId, TypeStore};
+use noto_types::{DefId, Primitive, TypeId, TypeStore};
 use std::collections::HashMap;
 
 /// Identifies a local binding within a compilation.
@@ -402,6 +402,33 @@ pub fn witness_members(
     members
 }
 
+/// A built-in type the compiler can synthesise interface conformance for.
+///
+/// The user cannot write `class Int(..): Comparable` — there is no `class
+/// Int` to open — so RFC 0003's fixed table of primitive conformances is
+/// keyed on this instead of on a [`ClassId`]. `String` is not a
+/// [`Primitive`](noto_types::Primitive) (it is its own
+/// [`Type`](noto_types::Type) variant), so it gets its own case rather than
+/// living inside that enum.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum BuiltinType {
+    /// Any primitive scalar.
+    Primitive(Primitive),
+    /// `String`.
+    String,
+}
+
+impl BuiltinType {
+    /// The name it renders as in a witness's name and a synthesised
+    /// function's symbol, e.g. `Int` or `String`.
+    pub fn name(self) -> &'static str {
+        match self {
+            BuiltinType::Primitive(primitive) => primitive.name(),
+            BuiltinType::String => "String",
+        }
+    }
+}
+
 /// Where the witness for one bound comes from at one call.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum WitnessSource {
@@ -409,6 +436,15 @@ pub enum WitnessSource {
     Concrete {
         /// The implementing class.
         class: ClassId,
+        /// The interface it is passed as.
+        interface: InterfaceId,
+    },
+    /// The concrete type is a compiler built-in — a primitive, or `String` —
+    /// conforming by RFC 0003's fixed table rather than by a declaration the
+    /// checker looked up. See [`BuiltinType`].
+    Builtin {
+        /// Which built-in type.
+        ty: BuiltinType,
         /// The interface it is passed as.
         interface: InterfaceId,
     },

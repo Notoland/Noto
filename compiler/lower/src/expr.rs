@@ -3,7 +3,7 @@
 use crate::{lower_type, Builder};
 use noto_ast::{BinaryOp, Expr, ExprKind, Literal, StringSegment, UnaryOp};
 use noto_ir::{BinOp, Const, InstKind, Intrinsic, IrType, Operand, Terminator, UnOp};
-use noto_semantic::{Builtin, Resolution, WitnessSource};
+use noto_semantic::{Builtin, BuiltinType, Resolution, WitnessSource};
 use noto_span::Span;
 
 impl Builder<'_> {
@@ -848,6 +848,13 @@ impl Builder<'_> {
                         witness,
                     })
                 }
+                WitnessSource::Builtin { ty, interface } => {
+                    let witness = self.builtin_witness_table(ty, interface);
+                    self.emit_value(IrType::Ptr, expr.span, |dest| InstKind::WitnessAddr {
+                        dest,
+                        witness,
+                    })
+                }
             };
             operands.push(operand);
         }
@@ -872,6 +879,28 @@ impl Builder<'_> {
             methods.push(self.func_id_of(method.function)?);
         }
         Some(self.program.intern_witness(&name, methods))
+    }
+
+    /// Interns the table of a built-in type's implementation of one
+    /// interface — RFC 0003's fixed conformances.
+    ///
+    /// Unlike [`Self::witness_table`] this never fails: the checker already
+    /// confirmed `ty` conforms before producing a
+    /// [`WitnessSource::Builtin`], and [`crate::builtin_conformance`] builds
+    /// whichever function each slot needs rather than looking one up.
+    fn builtin_witness_table(
+        &mut self,
+        ty: BuiltinType,
+        interface: noto_semantic::InterfaceId,
+    ) -> noto_ir::WitnessId {
+        let name = format!("{}:{}", ty.name(), self.analysis.interface(interface).name);
+        let methods: Vec<_> = self
+            .analysis
+            .witness_members(interface)
+            .into_iter()
+            .map(|(_, member)| crate::builtin_conformance::function_for(self.program, ty, &member))
+            .collect();
+        self.program.intern_witness(&name, methods)
     }
 
     /// Loads a member out of a witness and calls it with the receiver first.

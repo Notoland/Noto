@@ -1,4 +1,4 @@
-// Interfaces in Noto 0.14, and what they promise.
+// Interfaces in Noto 0.16, and what they promise.
 //
 //     noto test examples/interfaces.noto
 //     noto run examples/interfaces.noto
@@ -16,14 +16,13 @@
 // passed as a hidden argument. That is the only argument in the language the
 // source does not show, and the only thing generics do that is not free —
 // one pointer per bound, paid by code that uses one.
-
-/// Two values of the same type, ordered.
-///
-/// `Self` is the implementing type, so a `Version` compares to a `Version`
-/// and never to a `Rect`.
-export interface Comparable {
-    fn compareTo(other: Self): Int
-}
+//
+// `Comparable` and `Hashable` are not declared anywhere below, and need no
+// import: nothing can open `class Int` or `class String` to write
+// `compareTo` or `hash` on them, so the compiler knows both by name and every
+// module sees them for free. `Int`, the sized integers, `Byte`, `Char` and
+// `String` implement both; `Bool` implements only `Hashable`. That fixed
+// table is the whole of it — see docs/rfcs/0003-interfaces-and-bounds.md.
 
 /// Something that knows how big it is.
 export interface Sized {
@@ -62,6 +61,10 @@ export fn largest<T: Comparable>(xs: [T]): T {
 /// given rather than building one, because it does not know the type either.
 export fn largestOfThree<T: Comparable>(a: T, b: T, c: T): T = largest([a, b, c])
 
+/// `Hashable` is the other half of the built-in table: everything
+/// `Comparable` reaches, plus `Bool`, minus nothing — see the table above.
+export fn hashOf<T: Hashable>(x: T): Int = x.hash()
+
 /// A bound flows through a generic class the same way: `Holder(Circle(1))`
 /// is rejected at the construction.
 ///
@@ -99,6 +102,24 @@ test "a bound lets only an implementer through" {
     // firstOf([Circle(1)]) would be NOTO0413: Circle is not Comparable.
 }
 
+test "the built-in types reach the same bound, with no declaration at all" {
+    // `largest` above is the RFC's own motivating example: it is compiled
+    // once, and an `Int` and a `String` share that one compiled copy with
+    // `Version` and `Buffer` — four different witnesses, one function.
+    assert(largest([3, 1, 4, 1, 5, 9]) == 9)
+    assert(largest(["pear", "apple", "quince"]) == "quince")
+}
+
+test "hash reaches Int, String and Bool, but compareTo does not reach Bool" {
+    assert(hashOf(5) == 5)
+    assert(hashOf(true) == 1)
+    // hashOf reused for the receiver's own words: a `String`'s hash is a
+    // running total over its bytes, not its identity.
+    assert(hashOf("ab") == 97 * 31 + 98)
+
+    // largest([true, false]) would be NOTO0413: Bool is not Comparable.
+}
+
 test "a bound reaches the members it promised" {
     assert(largest([Version(1, 4), Version(2, 0), Version(0, 9)]).major == 2)
     // The same compiled `largest`, a different type, a different table.
@@ -129,4 +150,7 @@ fn main() {
     }
 
     println("buffer de ${Buffer(64).size} bytes")
+
+    println("o maior de tres numeros: ${largest([3, 1, 4])}")
+    println("a maior de tres palavras: ${largest(["pera", "maca", "uva"])}")
 }

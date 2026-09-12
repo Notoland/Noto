@@ -1,11 +1,11 @@
 # Noto — Handoff
 
-State of the project at **0.15**. Written for whoever picks the work up next,
+State of the project at **0.16**. Written for whoever picks the work up next,
 human or agent. Read this before touching anything.
 
 **Where the project stands:** the compiler is real and works end to end. A
 `.noto` file becomes a static native ELF executable with no LLVM, no libc and
-no external toolchain. 595 tests pass, 0 fail, no warnings. The whole tool
+no external toolchain. 600 tests pass, 0 fail, no warnings. The whole tool
 set — `run`, `build`, `check`, `test`, `lint`, `fmt` — is implemented, and so
 is enough of the language to write real programs in it: `examples/wc.noto` is
 a `wc` that prints the same numbers as the system one.
@@ -74,7 +74,7 @@ noto/
 │   ├── ast/          noto-ast          syntax tree + visitor                  3 tests
 │   ├── parser/       noto-parser       recursive descent + precedence        60 tests
 │   ├── types/        noto-types        types, interning, unification         19 tests
-│   ├── semantic/     noto-semantic     name resolution + type checking      240 tests
+│   ├── semantic/     noto-semantic     name resolution + type checking      245 tests
 │   ├── ir/           noto-ir           Noto IR + textual form                13 tests
 │   ├── lower/        noto-lower        AST -> Noto IR                        62 tests
 │   ├── optimizer/    noto-optimizer    IR passes                              4 tests
@@ -184,6 +184,14 @@ fn main() {
   passes on the witness it was handed rather than building one. Bounds on a
   **class** are checked but do not dispatch — a class would carry its witness
   in a field, and that is not built
+- **built-in conformances**: `Int`, the sized ints, `Byte`, `Char` and
+  `String` implement `Comparable` and `Hashable`; `Bool` implements
+  `Hashable` only. Nothing can open `class Int` to write these, so the
+  compiler declares both interfaces itself — resolvable by name in every
+  module with no import — and builds `Int.compareTo`, `String.hash` and the
+  rest directly as IR the first time some witness needs one. This is what
+  makes `largest([1, 2, 3])` and `largest(["pear", "apple"])` compile with
+  `largest` unchanged — see `examples/interfaces.noto` and RFC 0003
 - inside a method a bare name is the receiver's member, and `p?.x` reads a
   field or property through a nullable receiver, producing a nullable result
 - lambdas: a value of type `fn(A): B`, capturing by value into a closure of
@@ -219,8 +227,8 @@ in Noto 0.15`. Nothing is silently accepted and miscompiled.
 |---|---|---|
 | `struct` / `data class` / `data struct` | `compiler/semantic/src/collect.rs` `declare_class` | value semantics need RFC 0001; `class` works |
 | class inheritance, defaults on constructor parameters | `collect.rs` `resolve_interface`, `declare_class` | fields, methods, properties and interfaces work |
-| generic interfaces, default method bodies | `collect.rs` `declare_interface`, `collect_interface` | abstract requirements work; see RFC 0003 |
-| calling a member through a bound | `check.rs` `check_method_call` | needs the witness; the bound itself is enforced |
+| generic interfaces, default method bodies | `collect.rs` `declare_interface`, `collect_interface` | abstract requirements work; calling a member through a bound now does too, via the witness — see RFC 0003 |
+| bounds on a class that dispatch, property requirements through a bound | `check.rs` `check_method_call` | the bound is enforced; a class has no witness field yet and no accessor exists for a property requirement |
 | explicit enum case values (`Red = 1`), methods on an enum, interfaces on one | `collect.rs` `declare_enum` | enums otherwise work, data included |
 | generic enums, explicit type arguments | `collect.rs` `declare_enum`, `check_call` | generic functions, classes and bounds work |
 | extension functions | `collect.rs` `collect_fn` | receiver resolution missing |
@@ -250,39 +258,48 @@ done. What follows is what is left, ordered by what unblocks the most.
 (nominal, declared at the type, erased, one witness pointer per bound) and the
 compiler implements them for **functions**, end to end:
 `examples/interfaces.noto` builds to a native binary and `largest` orders
-values of two different types from one compiled copy.
+values of two different types from one compiled copy — including, now,
+`largest([3, 1, 4])` and `largest(["pear", "apple"])`, the same compiled
+function, with no interface declared anywhere in the file.
+
+**Built-in conformances for the primitives landed:** `Int`, the sized ints,
+`Byte`, `Char` and `String` implement `Comparable` and `Hashable`; `Bool`
+implements `Hashable` only. `Comparable` and `Hashable` are two interfaces the
+checker declares itself in `Checker::new` (`compiler/semantic/src/lib.rs`),
+resolvable by name in every module without an import — RFC 0003's [Decided
+item 4](docs/rfcs/0003-interfaces-and-bounds.md#decided) is where that choice
+is written down. The functions a witness actually needs —
+`Int.compareTo`, `String.hash`, and the rest of the table — are built directly
+as Noto IR in `compiler/lower/src/builtin_conformance.rs`, the first time some
+witness asks for one, the same way `Class.<init>` is built from no source at
+all. `Float32`/`Float64` implement neither, on purpose — see RFC 0003.
 
 What is left, in the order it wants to go in:
 
-1. **Built-in conformances for the primitives.** `Int: Comparable`,
-   `String: Comparable`, `Hashable` on both. Without them a bound is useless on
-   the types most programs hold — `largest([1, 2, 3])` is `NOTO0413` today —
-   and the user cannot fix it, because `class Int` cannot be opened. The
-   compiler needs a fixed table it knows by name, and the methods it names have
-   to exist somewhere: that is the piece to design first, since `Int.compareTo`
-   is not a function anything has lowered.
-2. **Bounds on a class that dispatch.** `class SortedList<T: Comparable>` is
+1. **Bounds on a class that dispatch.** `class SortedList<T: Comparable>` is
    checked but its methods cannot reach the bound. A class carries its witness
    as a hidden field written at construction, which is one more field in the
    layout and one more argument to `<init>`.
-3. **Property requirements through a bound.** `val size: Int` on an interface
+2. **Property requirements through a bound.** `val size: Int` on an interface
    is checked at the implementing class but cannot be read through a `T`: the
    witness holds method pointers only, and a class satisfying a requirement
    with a plain *field* has no accessor function to point at. Synthesising one
    is the work.
-4. **Default method bodies.** Rejected today. Now that a witness exists they
+3. **Default method bodies.** Rejected today. Now that a witness exists they
    are reachable: a default is a function like any other, and the slot points
    at it when the implementer does not override.
-5. **Generic interfaces** (`interface Into<T>`), deliberately deferred by RFC
+4. **Generic interfaces** (`interface Into<T>`), deliberately deferred by RFC
    0003 because they turn "at most once" into "at most once per type argument
    tuple" and bring coherence questions back.
 
-Answer RFC 0003's "Still unresolved" section there, not in a commit: whether
-the compiler knows `Eq`/`Ord` by name, and whether a bound may reference the
-enclosing type parameters.
+Answer RFC 0003's "Still unresolved" section there, not in a commit: whether a
+bound may reference the enclosing type parameters, and the witness
+representation question (a table of function pointers, or a specialised
+single-method case).
 
 This also unblocks `data class` (structural equality is an interface a class
-implements), sorting, and hashing.
+implements) and sorting — `[Int].sorted()` written against `T: Comparable` now
+has something to call on the types most lists actually hold.
 
 ### 5.2 Floating point
 

@@ -3,6 +3,7 @@
 use super::*;
 use noto_diagnostics::RenderStyle;
 use noto_span::SourceMap;
+use noto_types::Primitive;
 
 /// Parses and analyses `source`, returning the analysis and every diagnostic
 /// message it produced.
@@ -497,8 +498,14 @@ fn an_interface_declares_the_members_it_requires() {
     let analysis = check_ok(
         "interface Comparable {\n    fn compareTo(other: Self): Int\n}\nfn main() {}\n",
     );
-    assert_eq!(analysis.interfaces.len(), 1);
-    let comparable = &analysis.interfaces[0];
+    // The compiler's own built-in `Comparable` and `Hashable` are always in
+    // `analysis.interfaces` too, shadowed here by this module's own
+    // declaration; a real span is what tells the two apart.
+    let comparable = analysis
+        .interfaces
+        .iter()
+        .find(|interface| !interface.span.is_dummy())
+        .expect("the interface this source declares");
     assert_eq!(comparable.name, "Comparable");
     assert_eq!(comparable.methods.len(), 1);
     assert_eq!(comparable.methods[0].name, "compareTo");
@@ -885,6 +892,68 @@ fn a_witness_flattens_what_the_interface_extends() {
     // What it extends comes first, so a `Comparable` slot is at the same
     // index whichever bound reached it.
     assert_eq!(members, vec!["compareTo".to_string(), "rank".to_string()]);
+}
+
+// --- built-in conformances --------------------------------------------
+
+#[test]
+fn int_satisfies_comparable_and_hashable_with_no_declaration_or_import() {
+    check_ok(
+        "fn firstOf<T: Comparable>(xs: [T]): T = xs[0]\n\
+         fn sizeOf<T: Hashable>(x: T): Int = x.hash()\n\
+         fn main() {\n    println(firstOf([3, 1, 4]))\n    println(sizeOf(3))\n}\n",
+    );
+}
+
+#[test]
+fn string_satisfies_comparable_and_hashable_too() {
+    check_ok(
+        "fn firstOf<T: Comparable>(xs: [T]): T = xs[0]\n\
+         fn main() {\n    println(firstOf([\"pear\", \"apple\"]))\n}\n",
+    );
+}
+
+#[test]
+fn bool_satisfies_hashable_but_not_comparable() {
+    check_ok(
+        "fn sizeOf<T: Hashable>(x: T): Int = x.hash()\nfn main() {\n    println(sizeOf(true))\n}\n",
+    );
+    check_error(
+        "fn firstOf<T: Comparable>(xs: [T]): T = xs[0]\n\
+         fn main() {\n    println(firstOf([true, false]))\n}\n",
+        "`Bool` does not implement `Comparable`",
+    );
+}
+
+#[test]
+fn a_module_s_own_comparable_shadows_the_built_in_one() {
+    // A module that declares its own `Comparable` gets that one, not the
+    // compiler's — the same way a local name shadows anything else.
+    check_error(
+        &format!(
+            "{COMPARABLE}fn firstOf<T: Comparable>(xs: [T]): T = xs[0]\n\
+             fn main() {{\n    println(firstOf([1, 2, 3]))\n}}\n"
+        ),
+        "`Int` does not implement `Comparable`",
+    );
+}
+
+#[test]
+fn a_primitive_bound_call_gets_a_built_in_witness() {
+    let analysis = check_ok(
+        "fn firstOf<T: Comparable>(xs: [T]): T = xs[0]\n\
+         fn main() {\n    println(firstOf([3, 1, 4]))\n}\n",
+    );
+    let sources: Vec<_> = analysis.witness_arguments.values().collect();
+    assert_eq!(sources.len(), 1);
+    assert!(
+        matches!(
+            sources[0][..],
+            [WitnessSource::Builtin { ty: BuiltinType::Primitive(Primitive::Int), .. }]
+        ),
+        "{:?}",
+        sources[0]
+    );
 }
 
 #[test]

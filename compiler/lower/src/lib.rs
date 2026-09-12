@@ -15,6 +15,7 @@
 
 #![deny(missing_docs)]
 
+mod builtin_conformance;
 mod expr;
 mod stmt;
 
@@ -275,7 +276,7 @@ pub fn payload_offset(index: u32) -> u32 {
     (1 + index) * FIELD_SIZE
 }
 
-fn lower_primitive(primitive: Primitive) -> IrType {
+pub(crate) fn lower_primitive(primitive: Primitive) -> IrType {
     use Primitive::*;
     match primitive {
         Int | Int64 => IrType::I64,
@@ -598,7 +599,7 @@ impl<'a> Builder<'a> {
                 codes::UNSUPPORTED_CONSTRUCT,
                 format!("{what} cannot be compiled to native code yet"),
             )
-            .with_primary(span, "not implemented in Noto 0.15"),
+            .with_primary(span, "not implemented in Noto 0.16"),
         );
         Operand::Const(Const::Unit)
     }

@@ -1,8 +1,9 @@
 # RFC 0003: Interfaces and bounds
 
-- **Status:** Implemented for functions — declarations, conformance, bounds
-  and witness dispatch are in. Classes, primitives and defaults are not. See
-  [Implementation status](#implementation-status).
+- **Status:** Implemented for functions — declarations, conformance, bounds,
+  witness dispatch and the primitive types' built-in conformances are in.
+  Bounds on a class, property requirements through a bound, and defaults are
+  not. See [Implementation status](#implementation-status).
 - **Discussion:** (open a PR to discuss)
 
 ## Summary
@@ -381,6 +382,19 @@ enforced by a test.
    not construct a `Self`: an interface cannot name the implementer's
    constructor.
 
+4. **`Comparable` and `Hashable` are compiler-special-cased, not ordinary
+   library interfaces.** There is no `std/comparable.noto` to import: the
+   compiler builds both directly — one `InterfaceInfo` each, no source, no
+   `DefId` a module owns — before any module is read, and every module
+   resolves the bare names to them unless it declares its own. The
+   alternative, an ordinary interface in a std file the user imports, does
+   not work: `largest([1, 2, 3])` with no import in sight is the RFC's own
+   motivating example, and a fixed table the checker consults by identity is
+   what makes a name always in scope without becoming a keyword. This does
+   not yet decide `Eq`/`Ord` or `data class`'s equality — only these two,
+   which the primitive table in
+   [Built-in conformances](#built-in-conformances) needs to exist at all.
+
 ## Still unresolved
 
 Each needs an answer before this RFC is `Implemented`.
@@ -388,10 +402,6 @@ Each needs an answer before this RFC is `Implemented`.
 1. **Witness representation.** A table of function pointers (simple, one
    indirection per call) versus specialising the common single-method case
    into a bare function pointer. Start with the table; measure.
-4. **Standard interfaces the compiler knows by name.** `Eq`, `Ord`, `Hashable`
-   — does the compiler special-case them (for `==`, for `when`, for `data
-   class` derivation), or are they ordinary library interfaces? This decides
-   how `data class` gets its equality.
 5. **Bounds referencing the enclosing parameters.** `<T, U: Container<T>>` —
    allowed? It is the point where bound resolution needs its own fixpoint.
    In scope for the bounds work, not deferred, but not yet designed.
@@ -451,14 +461,36 @@ type is passed under both bounds; the saving is that there is no second kind of
 witness and no chasing. One function decides that order, and both the table
 builder and every call site index with it, so they cannot disagree.
 
+**Built-in conformances for the primitives**, landed since:
+
+- `Comparable` and `Hashable` are two `InterfaceInfo`s the checker builds
+  itself in `Checker::new`, before any module is read — see [Decided](#decided)
+  item 4. `lookup_interface` resolves the bare name to one of these whenever a
+  module has not declared its own, which is what makes `fn largest<T:
+  Comparable>` usable with no declaration and no import
+- the table itself — which primitives get which, and `String` alongside them
+  — lives in one place, `Checker::builtin_conformances`, next to `satisfies`
+  and `witness_source`, the two questions everything else about a bound
+  reduces to
+- the missing piece the RFC called out — "a witness slot needs a real
+  function address, and nothing has lowered one" — is `Int.compareTo`,
+  `String.hash` and the rest of them, built directly as Noto IR in
+  `noto-lower`'s `builtin_conformance` module the first time some witness
+  actually needs one, the same way `Builder::lower_initializer` builds
+  `Class.<init>` from no source at all. `compareTo` on every integer width and
+  `Char` is the same three-way branch on `<`/`>` in whichever signedness the
+  type calls for; `hash` on any of them is the identity, since every value is
+  already the machine word an `Int` would be; `String`'s two are loops over
+  `StringLength`/`StringByteAt`, because a byte-comparison loop is something
+  `std/string.noto` could have written if `String` were a class — the
+  standard library is written in Noto wherever the language can express the
+  thing, and this is the closest an intrinsic-only type gets to that
+- `Float32`/`Float64` implement neither, on purpose: ordering and hashing a
+  float is a real design question (NaN, `-0.0`) this table does not answer by
+  leaving it out
+
 Not yet landed:
 
-- **built-in conformances for the primitives** (`Int: Comparable`, ...).
-  Without them a bound is useless on the types most programs hold —
-  `largest([1, 2, 3])` is `NOTO0413` — and the user cannot fix it, because
-  `class Int` cannot be opened. The diagnostic says so rather than suggesting
-  it. What has to be designed first is where `Int.compareTo` lives: a witness
-  slot needs a real function address, and nothing has lowered one
 - **bounds on a class that dispatch.** A class would carry its witness in a
   hidden field written at construction, rather than receiving it as an
   argument. Checked but not reachable: `item.weigh()` inside a
@@ -470,10 +502,6 @@ Not yet landed:
   that a witness exists — a default is a function like any other, and the slot
   points at it when the implementer does not override — but nothing emits one
   yet, which is why `has_default` is still not recorded
-- **built-in conformances for the primitives** (`Int: Comparable`, ...).
-  Without them a bound is useless on the types most programs hold:
-  `firstOf([1, 2, 3])` is `NOTO0413` today, and the diagnostic says why rather
-  than suggesting `class Int(..): Comparable`, which nobody can write
 - **interfaces on an enum.** Still rejected, because an enum cannot have
   methods at all yet
 
